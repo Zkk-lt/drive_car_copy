@@ -7,4 +7,9 @@
 # new environment variables
 
 # modified environment variables
+export CMAKE_PREFIX_PATH="/home/ubuntu/drive_car_copy/devel:$CMAKE_PREFIX_PATH"
+export LD_LIBRARY_PATH='/home/ubuntu/drive_car/devel/lib:/opt/ros/melodic/lib:/home/ubuntu/MMDeploy/onnxruntime-linux-x64-1.8.1/lib:/usr/local/protobuf/lib/'
+export PATH='/opt/ros/melodic/bin:/home/ubuntu/下载/yes/bin:/home/ubuntu/下载/yes/condabin:/home/ubuntu/.local/bin:/home/ubuntu/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/games:/usr/local/games:/snap/bin:/usr/local/protobuf/bin'
 export PWD='/home/ubuntu/drive_car_copy/build'
+export ROSLISP_PACKAGE_DIRECTORIES="/home/ubuntu/drive_car_copy/devel/share/common-lisp:$ROSLISP_PACKAGE_DIRECTORIES"
+export ROS_PACKAGE_PATH="/home/ubuntu/drive_car_copy/src:$ROS_PACKAGE_PATH"

@@ -1,0 +1,171 @@
+<?xml version="1.0"?>
+<launch>
+  <node pkg="move_car" type="control_pub" name="publish_speed_turn" output="screen">
+    <!-- Topics -->
+    <param name="reference_topic" value="/planner/reference_path"/>
+    <param name="raw_topic" value="/planner/raw_path"/>
+    <param name="tracked_topic" value="/pointpillars/tracked_objects"/>
+    <param name="car_topic" value="/car_message"/>
+    <param name="carvel_topic" value="/carvel"/>
+    <param name="imu_topic" value="/imu"/>
+    <param name="ned_odom_topic" value="/NED_odometry"/>
+    <param name="system_speed_topic" value="/system_speed"/>
+    <param name="cmd_topic" value="/cmd_vel"/>
+
+    <!-- Vehicle and command interface -->
+    <param name="control_rate" value="30.0"/>
+    <param name="wheelbase" value="0.60"/>
+    <param name="v_min" value="0.10"/>
+    <param name="max_speed" value="0.50"/>
+    <param name="cruise_speed" value="0.32"/>
+    <param name="max_accel" value="0.18"/>
+    <param name="max_decel" value="0.35"/>
+    <param name="max_steer" value="0.785398"/>
+    <param name="max_steer_rate" value="1.20"/>
+    <param name="feedback_steer_sign" value="1.0"/>
+    <param name="cmd_steer_sign" value="1.0"/>
+    <param name="cmd_steer_scale" value="1.0"/>
+    <param name="wheel_speed_scale" value="0.001"/>
+    <param name="carvel_speed_scale" value="0.001"/>
+    <param name="carvel_angular_is_steer" value="true"/>
+    <param name="carvel_yaw_rate_sign" value="1.0"/>
+    <param name="system_speed_scale" value="1.0"/>
+    <param name="ned_speed_scale" value="1.0"/>
+    <param name="speed_filter_alpha" value="0.35"/>
+    <param name="steering_filter_alpha" value="0.45"/>
+    <param name="yaw_rate_filter_alpha" value="0.35"/>
+
+    <!-- Reference-path consumption only; reconstruction stays in trajectory_reconstructor. -->
+    <param name="reference_timeout" value="0.35"/>
+    <param name="raw_timeout" value="0.35"/>
+    <param name="allow_raw_path_fallback" value="false"/>
+    <param name="min_path_points" value="2"/>
+    <param name="min_path_span" value="0.18"/>
+    <param name="reference_quality_gate_enabled" value="true"/>
+    <param name="reference_max_abs_e_theta" value="1.20"/>
+    <param name="reference_max_abs_kappa0" value="1.35"/>
+    <param name="reference_max_fit_rms" value="0.18"/>
+    <param name="reference_max_heading_jump" value="0.75"/>
+    <param name="reference_max_kappa_jump" value="0.55"/>
+    <param name="reference_hold_timeout" value="2.00"/>
+    <param name="reference_bad_speed_scale" value="0.30"/>
+    <param name="held_reference_max_speed" value="0.10"/>
+    <param name="control_recovery_ramp_seconds" value="0.50"/>
+    <param name="path_min_segment_length" value="0.015"/>
+    <param name="projection_lateral_weight" value="1.0"/>
+    <param name="max_path_curvature" value="1.50"/>
+    <param name="smooth_back_length" value="0.30"/>
+    <param name="smooth_front_length" value="2.40"/>
+    <param name="smooth_min_points" value="6"/>
+    <param name="smooth_huber_delta" value="0.08"/>
+    <param name="smooth_ridge" value="0.0001"/>
+    <param name="smooth_max_rms" value="0.35"/>
+    <param name="smooth_newton_iterations" value="6"/>
+    <param name="smooth_max_curvature_rate" value="1.80"/>
+
+    <!-- Lead vehicle distance is a longitudinal soft objective. -->
+    <param name="desired_follow_distance" value="2.00"/>
+    <param name="hard_stop_distance" value="0.65"/>
+    <param name="hard_stop_forward_x" value="-0.05"/>
+    <param name="target_min_forward_x" value="-0.10"/>
+    <param name="target_lateral_gate" value="3.00"/>
+    <param name="target_timeout" value="0.45"/>
+    <param name="target_pose_alpha" value="0.35"/>
+    <param name="target_yaw_alpha" value="0.20"/>
+    <param name="target_velocity_alpha" value="0.20"/>
+    <param name="target_range_alpha" value="0.55"/>
+    <param name="target_range_beta" value="0.12"/>
+    <param name="target_max_range_rate" value="1.0"/>
+    <param name="target_lost_range_rate_decay" value="0.82"/>
+    <param name="cth_time_headway" value="0.50"/>
+    <param name="cth_kp" value="0.22"/>
+    <param name="cth_kd" value="0.10"/>
+    <param name="cth_close_gap_slowdown_gain" value="0.40"/>
+    <param name="close_gap_min_speed_scale" value="0.45"/>
+    <param name="lost_target_speed_scale" value="0.75"/>
+
+    <!-- CPS physical-risk observer -->
+    <param name="cps_alpha_steer" value="0.85"/>
+    <param name="cps_alpha_imu_z" value="0.035"/>
+    <param name="cps_gamma_max" value="0.80"/>
+    <param name="cps_steering_delay" value="0.16"/>
+    <param name="cps_imu_window" value="0.80"/>
+    <param name="cps_command_history" value="2.0"/>
+    <param name="cps_residual_deadband" value="0.025"/>
+    <param name="cps_residual_lpf_alpha" value="0.18"/>
+    <param name="cps_max_steering_residual_for_gamma" value="0.35"/>
+    <param name="cps_compensation_gain" value="0.08"/>
+    <param name="max_cps_comp" value="0.05"/>
+    <param name="residual_comp_pause_gate" value="0.18"/>
+
+    <!-- CPS-fused spatial speed QP in b=v^2 -->
+    <param name="horizon_steps" value="20"/>
+    <param name="spatial_step" value="0.10"/>
+    <param name="friction_mu_base" value="0.45"/>
+    <param name="gravity" value="9.80665"/>
+    <param name="curvature_epsilon" value="0.03"/>
+    <param name="cps_global_speed_gain" value="0.45"/>
+    <param name="sqp_w_v" value="6.0"/>
+    <param name="sqp_w_accel" value="1.8"/>
+    <param name="sqp_w_jerk" value="6.0"/>
+    <param name="sqp_w_initial" value="9.0"/>
+
+    <!-- Spatial-domain SLQR steering controller with recursive-feasibility fallback -->
+    <param name="slqr_horizon_steps" value="20"/>
+    <param name="slqr_max_delta_step" value="0.08"/>
+    <param name="slqr_rate_from_actuator" value="true"/>
+    <param name="slqr_rate_step_scale" value="1.50"/>
+    <param name="slqr_q_y" value="26.0"/>
+    <param name="slqr_q_theta" value="10.0"/>
+    <param name="slqr_q_terminal_y" value="90.0"/>
+    <param name="slqr_q_terminal_theta" value="40.0"/>
+    <param name="slqr_r_delta" value="0.55"/>
+    <param name="slqr_r_delta_rate" value="18.0"/>
+    <param name="slqr_r_feedforward" value="0.9"/>
+    <param name="slqr_fallback_cost_ratio" value="1.45"/>
+    <param name="slqr_error_guard_y" value="3.0"/>
+    <param name="slqr_error_guard_theta" value="1.40"/>
+    <param name="barrier_weight" value="0.020"/>
+    <param name="barrier_rate_weight" value="0.010"/>
+    <param name="barrier_adapt_low_margin" value="0.001"/>
+    <param name="barrier_adapt_recover_margin" value="0.08"/>
+    <param name="barrier_adapt_trigger_count" value="5"/>
+    <param name="barrier_adapt_scale" value="0.55"/>
+    <param name="barrier_adapt_speed_scale" value="0.75"/>
+
+    <!-- Yaw damping and conservative curvature shaping for anti-sway behavior -->
+    <param name="yaw_damping_gain" value="0.10"/>
+    <param name="max_yaw_damping_delta" value="0.08"/>
+    <param name="yaw_rate_slow_gate" value="0.08"/>
+    <param name="yaw_rate_speed_scale" value="0.65"/>
+    <param name="kappa_control_alpha" value="0.35"/>
+    <param name="kappa_preview_count" value="3"/>
+    <param name="kappa_preview_mix" value="0.40"/>
+    <param name="steer_sign_diag_window" value="1.0"/>
+    <param name="steer_sign_diag_min_corr" value="0.50"/>
+
+    <!-- Steering dead-time compensation -->
+    <param name="delay_compensation_enabled" value="true"/>
+    <param name="steering_delay_seconds" value="0.20"/>
+    <param name="steering_delay_steps" value="4"/>
+    <param name="delay_derivative_gain" value="0.018"/>
+    <param name="max_delay_comp" value="0.06"/>
+    <param name="delta_comp_lpf_alpha" value="0.22"/>
+    <param name="comp_deadband" value="0.004"/>
+    <param name="steering_history_seconds" value="2.0"/>
+
+    <!-- Debug CSV logs: truncated and recreated on every node startup. -->
+    <param name="enable_debug_csv_logs" value="true"/>
+    <param name="debug_log_dir" value="/home/ubuntu/drive_car_copy/cdata"/>
+    <param name="runtime_debug_file" value="runtime_debug.csv"/>
+    <param name="path_debug_file" value="path_snapshot.csv"/>
+    <param name="profile_debug_file" value="profile_debug.csv"/>
+    <param name="profile_log_stride" value="3"/>
+
+    <!-- Command smoothing and fail-safe behavior -->
+    <param name="speed_cmd_alpha" value="0.32"/>
+    <param name="steer_cmd_alpha" value="0.28"/>
+    <param name="stale_path_stop" value="true"/>
+    <param name="publish_zero_on_stop" value="false"/>
+  </node>
+</launch>

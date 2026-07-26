@@ -2,4 +2,4 @@
 source_root_dir = '/home/ubuntu/drive_car_copy/src'
 whitelisted_packages = ''.split(';') if '' != '' else []
 blacklisted_packages = ''.split(';') if '' != '' else []
-underlay_workspaces = '/home/ubuntu/drive_car_copy/devel;/home/ubuntu/drive_car/devel;/opt/ros/melodic'.split(';') if '/home/ubuntu/drive_car_copy/devel;/home/ubuntu/drive_car/devel;/opt/ros/melodic' != '' else []
+underlay_workspaces = '/home/ubuntu/drive_car/devel;/opt/ros/melodic'.split(';') if '/home/ubuntu/drive_car/devel;/opt/ros/melodic' != '' else []

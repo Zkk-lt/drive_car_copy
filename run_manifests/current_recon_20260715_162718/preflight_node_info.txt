@@ -1,0 +1,62 @@
+--------------------------------------------------------------------------------
+Node [/trajectory_reconstructor_preflight]
+Publications: 
+ * /planner/raw_path [nav_msgs/Path]
+ * /planner/reference_path [nav_msgs/Path]
+ * /planner/reference_status [std_msgs/String]
+ * /rosout [rosgraph_msgs/Log]
+
+Subscriptions: 
+ * /NED_odometry [nav_msgs/Odometry]
+ * /car_message [move_car/car_parameter]
+ * /carvel [geometry_msgs/Twist]
+ * /imu [sensor_msgs/Imu]
+ * /pointpillars/tracked_objects [geometry_msgs/PoseArray]
+ * /tf [unknown type]
+ * /tf_static [tf2_msgs/TFMessage]
+
+Services: 
+ * /trajectory_reconstructor_preflight/get_loggers
+ * /trajectory_reconstructor_preflight/set_logger_level
+
+
+contacting node http://localhost:37447/ ...
+Pid: 29311
+Connections:
+ * topic: /rosout
+    * to: /rosout
+    * direction: outbound (49003 - 127.0.0.1:55054) [13]
+    * transport: TCPROS
+ * topic: /planner/raw_path
+    * to: /rviz
+    * direction: outbound (49003 - 127.0.0.1:55064) [10]
+    * transport: TCPROS
+ * topic: /planner/reference_path
+    * to: /rviz
+    * direction: outbound (49003 - 127.0.0.1:55068) [11]
+    * transport: TCPROS
+ * topic: /tf_static
+    * to: /base_to_lidar (http://localhost:44107/)
+    * direction: inbound (50332 - localhost:41781) [12]
+    * transport: TCPROS
+ * topic: /pointpillars/tracked_objects
+    * to: /pointpillars_platoon_node (http://localhost:35995/)
+    * direction: inbound (34052 - localhost:35005) [26]
+    * transport: TCPROS
+ * topic: /car_message
+    * to: /carTop (http://localhost:37977/)
+    * direction: inbound (33802 - localhost:47311) [27]
+    * transport: TCPROS
+ * topic: /carvel
+    * to: /carTop (http://localhost:37977/)
+    * direction: inbound (33818 - localhost:47311) [28]
+    * transport: TCPROS
+ * topic: /imu
+    * to: /ahrs_driver (http://localhost:34071/)
+    * direction: inbound (49274 - localhost:34703) [29]
+    * transport: TCPROS
+ * topic: /NED_odometry
+    * to: /ahrs_driver (http://localhost:34071/)
+    * direction: inbound (49276 - localhost:34703) [30]
+    * transport: TCPROS
+

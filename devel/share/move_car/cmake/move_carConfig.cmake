@@ -154,7 +154,7 @@ foreach(library ${libraries})
     set(lib_path "")
     set(lib "${library}-NOTFOUND")
     # since the path where the library is found is returned we have to iterate over the paths manually
-    foreach(path /home/ubuntu/drive_car_copy/devel/lib;/home/ubuntu/drive_car_copy/devel/lib;/home/ubuntu/drive_car/devel/lib;/opt/ros/melodic/lib)
+    foreach(path /home/ubuntu/drive_car_copy/devel/lib;/home/ubuntu/drive_car/devel/lib;/opt/ros/melodic/lib)
       find_library(lib ${library}
         PATHS ${path}
         NO_DEFAULT_PATH NO_CMAKE_FIND_ROOT_PATH)
@@ -185,7 +185,7 @@ foreach(t ${move_car_EXPORTED_TARGETS})
   endif()
 endforeach()
 
-set(depends "roscpp;rospy;std_msgs;message_runtime;geometry_msgs;nav_msgs")
+set(depends "roscpp;rospy;std_msgs;sensor_msgs;message_runtime;geometry_msgs;nav_msgs;tf2;tf2_ros")
 foreach(depend ${depends})
   string(REPLACE " " ";" depend_list ${depend})
   # the package name of the dependency must be kept in a unique variable so that it is not overwritten in recursive calls

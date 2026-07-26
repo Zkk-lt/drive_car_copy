@@ -6,5 +6,6 @@
     "python.analysis.extraPaths": [
         "/home/ubuntu/drive_car_copy/devel/lib/python2.7/dist-packages",
         "/opt/ros/melodic/lib/python2.7/dist-packages"
-    ]
+    ],
+    "cmake.ignoreCMakeListsMissing": true
 }

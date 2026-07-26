@@ -5,4 +5,4 @@ Description: Description of move_car
 Version: 0.0.0
 Cflags: -I/home/ubuntu/drive_car_copy/devel/include
 Libs: -L${prefix}/lib 
-Requires: roscpp rospy std_msgs message_runtime geometry_msgs nav_msgs
+Requires: roscpp rospy std_msgs sensor_msgs message_runtime geometry_msgs nav_msgs tf2 tf2_ros

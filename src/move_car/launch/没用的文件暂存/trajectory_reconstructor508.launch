@@ -1,0 +1,170 @@
+<!-- /*
+改进版：响应更快
+*/ -->
+
+
+<launch>
+  <arg name="pkg" default="move_car"/>
+  <arg name="node_type" default="trajectory_reconstructor"/>
+  <arg name="node_name" default="trajectory_reconstructor"/>
+
+  <node pkg="$(arg pkg)"
+        type="$(arg node_type)"
+        name="$(arg node_name)"
+        output="screen"
+        respawn="false">
+
+    <!-- Frames / topics -->
+    <param name="base_frame" value="base_link"/>
+    <param name="odom_frame" value="reconstruction_odom"/>
+    <param name="tracked_topic" value="/pointpillars/tracked_objects"/>
+    <param name="car_topic" value="/car_message"/>
+    <param name="carvel_topic" value="/carvel"/>
+    <param name="raw_topic" value="/planner/raw_path"/>
+    <param name="reference_topic" value="/planner/reference_path"/>
+    <param name="allow_unstamped_tracked_fallback" value="true"/>
+    <param name="reconstructed_traj_log_file" value="/home/ubuntu/drive_car_copy/data/reconstructed_relative_trajectory.txt"/>
+    <param name="history_traj_log_file" value="/home/ubuntu/drive_car_copy/data/history_relative_trajectory.txt"/>
+
+    <!-- Ego motion model: steering-angle bicycle model -->
+    <param name="publish_rate_hz" value="30.0"/>
+    <param name="wheelbase" value="2.60"/>
+    <param name="wheel_speed_scale" value="0.001"/>
+    <param name="speed_hint_scale" value="1.0"/>
+    <param name="steer_angle_scale" value="0.017453293"/>
+    <param name="steer_angle_bias" value="0.0"/>
+    <param name="steer_sign" value="-1.0"/>
+    <param name="steer_deadband_rad" value="0.002"/>
+    <param name="steer_lpf_alpha" value="0.25"/>
+    <param name="min_motion_speed_for_yaw" value="0.04"/>
+    <param name="max_abs_yaw_rate" value="0.80"/>
+    <param name="max_integration_dt" value="0.02"/>
+    <param name="pose_buffer_duration" value="5.0"/>
+    <param name="yaw_sigma_base" value="0.01"/>
+    <param name="yaw_sigma_speed_gain" value="0.02"/>
+    <param name="yaw_sigma_steer_gain" value="0.08"/>
+
+    <!-- Speed hint is optional. Keep disabled until units are fully confirmed. -->
+    <param name="use_speed_hint" value="false"/>
+    <param name="speed_hint_weight" value="0.20"/>
+    <param name="speed_hint_timeout" value="0.30"/>
+    <param name="speed_hint_agreement_gate" value="0.40"/>
+
+    <!-- Measurement gating and target lock -->
+    <param name="target_min_forward_x" value="0.10"/>
+    <param name="target_lateral_gate" value="4.00"/>
+    <param name="target_lock_dist_gate" value="1.20"/>
+    <param name="target_lock_yaw_gate" value="1.10"/>
+    <param name="lost_timeout" value="0.60"/>
+
+    <!-- Lead target reference point.
+         If your detector outputs box center and you want the path reference closer
+         to the lead vehicle rear-axle center, set a positive offset in meters. -->
+    <param name="lead_center_to_path_ref_offset" value="0.00"/>
+    <param name="heading_blend_alpha" value="0.20"/>
+    <param name="heading_from_velocity_speed_gate" value="0.25"/>
+
+    <!-- Innovation gate: grows with range and ego turning -->
+    <param name="innovation_base_gate" value="0.10"/>
+    <param name="innovation_range_gain" value="0.015"/>
+    <param name="innovation_turn_gain" value="0.80"/>
+    <param name="outlier_reject_scale" value="3.0"/>
+
+    <!-- Static / moving logic and anti-drag anchor -->
+    <param name="lead_static_speed_gate" value="0.05"/>
+    <param name="lead_moving_speed_gate" value="0.08"/>
+    <param name="static_residual_gate" value="0.12"/>
+    <param name="moving_residual_gate" value="0.30"/>
+    <param name="static_vote_on" value="12"/>
+    <param name="static_vote_release" value="6"/>
+    <param name="moving_vote_on" value="2"/>
+    <param name="anchor_alpha" value="0.08"/>
+    <param name="static_preserve_trail_span" value="0.80"/>
+
+    <!-- Fixed-window smoothing and history export -->
+    <param name="history_max_age" value="20.0"/>
+    <param name="history_max_points" value="300"/>
+    <param name="smoother_position_gain" value="0.35"/>
+    <param name="smoother_cross_gain" value="0.18"/>
+    <param name="smoother_temporal_alpha" value="0.22"/>
+    <param name="smoother_heading_alpha" value="0.20"/>
+    <param name="smoother_curvature_alpha" value="0.18"/>
+    <param name="measurement_heading_alpha" value="0.12"/>
+    <param name="dynamics_position_alpha" value="0.12"/>
+    <param name="dynamics_heading_alpha" value="0.16"/>
+    <param name="acceleration_regularization_alpha" value="0.16"/>
+    <param name="curvature_prediction_alpha" value="0.18"/>
+    <param name="dkappa_regularization_alpha" value="0.20"/>
+    <param name="ego_compensated_static_gate" value="0.10"/>
+    <param name="ego_compensated_moving_gate" value="0.22"/>
+    <param name="static_measurement_anchor_alpha" value="0.18"/>
+    <param name="robust_cauchy_scale" value="2.5"/>
+    <param name="smoother_iterations" value="5"/>
+    <param name="measurement_along_sigma" value="0.08"/>
+    <param name="measurement_cross_sigma" value="0.12"/>
+    <param name="measurement_cross_range_gain" value="0.020"/>
+    <param name="measurement_cross_yaw_uncertainty_gain" value="1.80"/>
+    <param name="temporal_min_progress" value="0.02"/>
+    <param name="trail_append_min_distance" value="0.12"/>
+    <param name="trail_anchor_update_alpha" value="0.10"/>
+    <param name="tail_confirm_min_points" value="3"/>
+    <param name="tail_confirm_min_distance" value="0.05"/>
+    <param name="tail_confirm_min_age" value="0.18"/>
+    <param name="tail_confirm_min_time" value="0.25"/>
+    <param name="tail_buffer_max_points" value="12"/>
+    <param name="tail_buffer_max_age" value="0.60"/>
+    <param name="static_tail_keep_points" value="3"/>
+    <param name="publish_tail_suffix" value="false"/>
+    <param name="lead_tail_max_speed" value="1.20"/>
+    <param name="tail_cross_gate" value="0.30"/>
+    <param name="tail_reverse_gate" value="-0.03"/>
+    <param name="static_anchor_res_gate" value="0.04"/>
+    <param name="static_anchor_progress_gate" value="0.04"/>
+    <param name="static_anchor_speed_gate" value="0.06"/>
+    <param name="static_anchor_append_distance_gate" value="0.08"/>
+    <param name="confirm_dynamic_score_margin" value="0.08"/>
+    <param name="confirm_static_residual_gate" value="0.14"/>
+    <param name="confirm_min_progress" value="0.05"/>
+    <param name="confirm_accum_distance" value="0.08"/>
+    <param name="confirm_accum_timeout" value="0.60"/>
+    <param name="ego_static_speed_gate" value="0.05"/>
+    <param name="static_release_score_margin" value="0.06"/>
+    <param name="raw_tail_keep_points" value="6"/>
+    <param name="dual_hypothesis_score_margin" value="0.02"/>
+
+    <!-- raw_path: pure reconstructed lead-history in current base_link -->
+    <param name="raw_resample_ds" value="0.08"/>
+    <param name="raw_fit_ds" value="0.06"/>
+    <param name="raw_spline_passes" value="4"/>
+    <param name="raw_spline_alpha" value="0.45"/>
+    <param name="raw_tail_weight_scale" value="0.25"/>
+    <param name="raw_preserve_history_geometry" value="true"/>
+    <param name="raw_min_points_for_publish" value="2"/>
+    <param name="raw_min_span_for_publish" value="0.05"/>
+    <param name="raw_keep_behind_x" value="0.50"/>
+    <param name="raw_max_range" value="30.0"/>
+    <param name="raw_max_points" value="250"/>
+
+    <!-- reference_path: connector from ego origin + raw_path suffix -->
+    <param name="reference_join_min_forward_x" value="0.20"/>
+    <param name="reference_join_max_lateral" value="3.00"/>
+    <param name="reference_join_lookahead" value="0.20"/>
+    <param name="reference_join_skip_weight" value="0.20"/>
+    <param name="reference_join_curvature_weight" value="0.90"/>
+    <param name="reference_join_time_weight" value="0.60"/>
+    <param name="reference_join_progress_weight" value="0.25"/>
+    <param name="reference_join_s_window" value="2.00"/>
+    <param name="reference_min_points" value="2"/>
+    <param name="reference_min_span" value="0.18"/>
+    <param name="reference_direct_attach_dist" value="0.12"/>
+    <param name="reference_connector_enable_dist" value="0.15"/>
+    <param name="reference_connector_resolution" value="0.08"/>
+    <param name="reference_connector_tangent_scale" value="0.65"/>
+    <param name="reference_connector_curvature_scale" value="1.00"/>
+    <param name="reference_splice_blend_length" value="0.60"/>
+    <param name="reference_resample_ds" value="0.08"/>
+    <param name="reference_sg_passes" value="1"/>
+    <param name="reference_max_length" value="20.0"/>
+    <param name="reference_follow_raw_only" value="false"/>
+  </node>
+</launch>

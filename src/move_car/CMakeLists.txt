@@ -11,9 +11,12 @@ find_package(catkin REQUIRED COMPONENTS
   roscpp
   rospy
   std_msgs
+  sensor_msgs
   message_generation
   geometry_msgs
   nav_msgs
+  tf2
+  tf2_ros
 )
 
 find_package(Eigen3 REQUIRED)
@@ -111,7 +114,7 @@ find_package(Eigen3 REQUIRED)
 catkin_package(
 #  INCLUDE_DIRS include
 #  LIBRARIES move_car
- CATKIN_DEPENDS roscpp rospy std_msgs message_runtime geometry_msgs nav_msgs
+ CATKIN_DEPENDS roscpp rospy std_msgs sensor_msgs message_runtime geometry_msgs nav_msgs tf2 tf2_ros
 #  DEPENDS system_lib
 )
 

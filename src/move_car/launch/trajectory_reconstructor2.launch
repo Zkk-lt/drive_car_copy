@@ -1,0 +1,360 @@
+<!-- /*
+改进版：响应更快
+*/ -->
+
+
+<launch>
+  <arg name="pkg" default="move_car"/>
+  <arg name="node_type" default="trajectory_reconstructor"/>
+  <arg name="node_name" default="trajectory_reconstructor"/>
+
+  <node pkg="$(arg pkg)"
+        type="$(arg node_type)"
+        name="$(arg node_name)"
+        output="screen"
+        respawn="false">
+
+    <!-- Frames / topics -->
+    <param name="base_frame" value="base_link"/>
+    <param name="odom_frame" value="reconstruction_odom"/>
+    <param name="tracked_topic" value="/pointpillars/tracked_objects"/>
+    <param name="car_topic" value="/car_message"/>
+    <param name="carvel_topic" value="/carvel"/>
+    <param name="system_speed_topic" value="/system_speed"/>
+    <param name="ned_odom_topic" value="/NED_odometry"/>
+    <param name="imu_topic" value="/imu"/>
+    <param name="raw_topic" value="/planner/raw_path"/>
+    <param name="reference_topic" value="/planner/reference_path"/>
+    <param name="allow_unstamped_tracked_fallback" value="true"/>
+    <param name="enable_debug_csv_logs" value="true"/>
+    <param name="debug_log_dir" value="/home/ubuntu/drive_car_copy/data"/>
+    <param name="reconstructed_traj_log_file" value="/home/ubuntu/drive_car_copy/data/reconstructed_relative_trajectory.txt"/>
+    <param name="history_traj_log_file" value="/home/ubuntu/drive_car_copy/data/history_relative_trajectory.txt"/>
+
+    <!-- Ego motion model: steering-angle bicycle model -->
+    <param name="publish_rate_hz" value="30.0"/>
+    <param name="wheelbase" value="2.60"/>
+    <param name="wheel_speed_scale" value="0.001"/>
+    <param name="speed_hint_scale" value="0.001"/>
+    <param name="system_speed_scale" value="1.0"/>
+    <param name="system_speed_msg_type" value="twist"/>
+    <param name="ned_odom_speed_scale" value="1.0"/>
+    <param name="steer_angle_scale" value="1.0"/>
+    <param name="steer_angle_bias" value="0.0"/>
+    <param name="steer_sign" value="-1.0"/>
+    <param name="steer_deadband_rad" value="0.002"/>
+    <param name="steer_lpf_alpha" value="0.25"/>
+    <param name="min_motion_speed_for_yaw" value="0.04"/>
+    <param name="max_abs_yaw_rate" value="0.80"/>
+    <param name="max_integration_dt" value="0.02"/>
+    <param name="pose_buffer_duration" value="5.0"/>
+    <param name="yaw_sigma_base" value="0.01"/>
+    <param name="yaw_sigma_speed_gain" value="0.02"/>
+    <param name="yaw_sigma_steer_gain" value="0.08"/>
+    <param name="use_imu_yaw_rate" value="true"/>
+    <param name="imu_yaw_rate_scale" value="1.0"/>
+    <param name="imu_yaw_rate_bias" value="0.0"/>
+    <param name="imu_yaw_rate_sign" value="1.0"/>
+    <param name="imu_yaw_rate_lpf_alpha" value="0.20"/>
+    <param name="imu_yaw_rate_timeout" value="0.15"/>
+    <param name="imu_yaw_rate_agreement_gate" value="0.35"/>
+    <param name="imu_yaw_sigma_base" value="0.004"/>
+    <param name="imu_yaw_sigma_rate_gain" value="0.015"/>
+    <param name="imu_yaw_rate_deadband" value="0.004"/>
+    <param name="imu_yaw_spike_gate" value="0.45"/>
+    <param name="imu_yaw_activity_gate" value="0.025"/>
+    <param name="imu_activity_hold_time" value="0.25"/>
+    <param name="standstill_speed_gate" value="0.04"/>
+    <param name="standstill_gyro_gate" value="0.015"/>
+    <param name="low_speed_yaw_gate" value="0.12"/>
+    <param name="imu_yaw_mixing_speed_gate" value="0.20"/>
+    <param name="zero_yaw_rate_when_standstill" value="true"/>
+    <param name="static_anchor_ego_xy_gain" value="0.45"/>
+    <param name="static_anchor_ego_xy_gate" value="1.50"/>
+    <param name="static_anchor_ego_xy_step" value="0.35"/>
+    <param name="static_anchor_ego_xy_min_track_age" value="1.20"/>
+
+    <!-- Multi-source ego translation: wheel, /system_speed, /NED_odometry, then /carvel. -->
+    <param name="use_speed_hint" value="true"/>
+    <param name="use_system_speed" value="true"/>
+    <param name="use_ned_odometry_speed" value="true"/>
+    <param name="use_ned_odometry_pose_delta" value="true"/>
+    <param name="speed_hint_weight" value="0.20"/>
+    <param name="speed_hint_timeout" value="0.30"/>
+    <param name="speed_source_timeout" value="0.30"/>
+    <param name="odom_pose_delta_speed_gate" value="0.04"/>
+    <param name="odom_pose_delta_max_speed" value="3.0"/>
+    <param name="speed_hint_agreement_gate" value="0.40"/>
+
+    <!-- Measurement gating and target lock -->
+    <param name="target_min_forward_x" value="0.10"/>
+    <param name="target_lateral_gate" value="4.00"/>
+    <param name="target_lock_dist_gate" value="1.20"/>
+    <param name="target_lock_yaw_gate" value="1.10"/>
+    <param name="lost_timeout" value="0.60"/>
+
+    <!-- Lead target reference point.
+         If your detector outputs box center and you want the path reference closer
+         to the lead vehicle rear-axle center, set a positive offset in meters. -->
+    <param name="lead_center_to_path_ref_offset" value="0.00"/>
+    <param name="heading_blend_alpha" value="0.20"/>
+    <param name="heading_from_velocity_speed_gate" value="0.25"/>
+
+    <!-- Observation filter: suppress bbox heading flips and residual-induced false speed -->
+    <param name="lead_filter_heading_update_speed_gate" value="0.18"/>
+    <param name="lead_filter_heading_flip_gate" value="1.20"/>
+    <param name="lead_filter_static_velocity_damping" value="0.35"/>
+    <param name="lead_filter_outlier_velocity_damping" value="0.60"/>
+
+    <!-- Innovation gate: grows with range and ego turning -->
+    <param name="innovation_base_gate" value="0.10"/>
+    <param name="innovation_range_gain" value="0.015"/>
+    <param name="innovation_turn_gain" value="0.80"/>
+    <param name="outlier_reject_scale" value="3.0"/>
+
+    <!-- Static / moving logic and anti-drag anchor -->
+    <param name="lead_static_speed_gate" value="0.05"/>
+    <param name="lead_moving_speed_gate" value="0.07"/>
+    <param name="static_residual_gate" value="0.12"/>
+    <param name="moving_residual_gate" value="0.30"/>
+    <param name="static_vote_on" value="20"/>
+    <param name="static_vote_release" value="10"/>
+    <param name="moving_vote_on" value="1"/>
+    <param name="anchor_alpha" value="0.08"/>
+    <param name="static_preserve_trail_span" value="0.80"/>
+
+    <!-- Fixed-window smoothing and history export -->
+    <param name="history_max_age" value="20.0"/>
+    <param name="confirmed_history_max_age" value="60.0"/>
+    <param name="confirmed_history_min_points_keep" value="30"/>
+    <param name="history_max_points" value="300"/>
+    <param name="export_static_anchor_to_history" value="false"/>
+    <param name="smoother_position_gain" value="0.35"/>
+    <param name="smoother_cross_gain" value="0.18"/>
+    <param name="smoother_temporal_alpha" value="0.22"/>
+    <param name="smoother_heading_alpha" value="0.20"/>
+    <param name="smoother_curvature_alpha" value="0.18"/>
+    <param name="measurement_heading_alpha" value="0.12"/>
+    <param name="dynamics_position_alpha" value="0.12"/>
+    <param name="dynamics_heading_alpha" value="0.16"/>
+    <param name="acceleration_regularization_alpha" value="0.16"/>
+    <param name="curvature_prediction_alpha" value="0.18"/>
+    <param name="dkappa_regularization_alpha" value="0.20"/>
+    <param name="ego_compensated_static_gate" value="0.10"/>
+    <param name="ego_compensated_moving_gate" value="0.22"/>
+    <param name="static_measurement_anchor_alpha" value="0.18"/>
+    <param name="robust_cauchy_scale" value="2.5"/>
+    <param name="smoother_iterations" value="5"/>
+    <param name="measurement_along_sigma" value="0.08"/>
+    <param name="measurement_cross_sigma" value="0.12"/>
+    <param name="measurement_cross_range_gain" value="0.020"/>
+    <param name="measurement_cross_yaw_uncertainty_gain" value="1.80"/>
+    <param name="temporal_min_progress" value="0.02"/>
+    <param name="trail_append_min_distance" value="0.12"/>
+    <param name="trail_anchor_update_alpha" value="0.10"/>
+    <param name="tail_confirm_min_points" value="3"/>
+    <param name="tail_confirm_min_distance" value="0.04"/>
+    <param name="tail_confirm_min_age" value="0.18"/>
+    <param name="tail_confirm_min_time" value="0.25"/>
+    <param name="tail_buffer_max_points" value="12"/>
+    <param name="tail_buffer_max_age" value="0.60"/>
+    <param name="static_tail_keep_points" value="3"/>
+    <param name="publish_tail_suffix" value="false"/>
+    <param name="lead_tail_max_speed" value="1.20"/>
+    <param name="tail_cross_gate" value="0.30"/>
+    <param name="tail_reverse_gate" value="-0.03"/>
+    <param name="static_anchor_res_gate" value="0.04"/>
+    <param name="static_anchor_progress_gate" value="0.04"/>
+    <param name="static_anchor_speed_gate" value="0.06"/>
+    <param name="static_anchor_append_distance_gate" value="0.08"/>
+    <param name="confirm_dynamic_score_margin" value="0.10"/>
+    <param name="confirm_static_residual_gate" value="0.14"/>
+    <param name="confirm_min_progress" value="0.08"/>
+    <param name="confirm_accum_distance" value="0.08"/>
+    <param name="confirm_accum_timeout" value="0.60"/>
+    <param name="ego_static_speed_gate" value="0.05"/>
+    <param name="static_release_score_margin" value="0.06"/>
+    <param name="raw_tail_keep_points" value="6"/>
+    <param name="dual_hypothesis_score_margin" value="0.02"/>
+    <param name="ego_yaw_mixing_yaw_rate_gate" value="0.04"/>
+    <param name="ego_yaw_mixing_lateral_gate" value="0.04"/>
+    <param name="ego_yaw_mixing_residual_gate" value="0.10"/>
+    <param name="ego_yaw_mixing_anchor_gate" value="0.10"/>
+    <param name="ego_yaw_mixing_dynamic_ratio" value="0.75"/>
+    <param name="ego_yaw_mixing_heading_gate" value="0.20"/>
+    <param name="ego_yaw_mixing_weight_scale" value="0.25"/>
+    <param name="dynamic_residual_margin" value="0.04"/>
+    <param name="reverse_progress_gate" value="0.04"/>
+    <param name="bootstrap_consecutive_dynamic" value="3"/>
+    <param name="history_kink_min_dist" value="0.30"/>
+    <param name="history_kink_heading_gate" value="0.35"/>
+    <param name="confirmed_history_kink_reject_angle" value="0.55"/>
+    <param name="confirmed_history_reverse_gate" value="0.035"/>
+    <param name="confirmed_history_short_reverse_dist" value="0.18"/>
+    <param name="confirmed_history_curvature_impulse_gate" value="7.0"/>
+    <param name="confirmed_history_stop_speed_gate" value="0.03"/>
+    <param name="confirmed_history_stop_residual_gate" value="0.45"/>
+    <param name="confirmed_history_stop_lead_speed_gate" value="0.55"/>
+    <param name="confirmed_history_projection_gate_enabled" value="true"/>
+    <param name="confirmed_history_projection_backtrack_gate" value="0.08"/>
+    <param name="confirmed_history_projection_near_dist" value="0.16"/>
+    <param name="confirmed_history_projection_lateral_gate" value="0.22"/>
+    <param name="reconstruction_reseed_bad_frames" value="18"/>
+    <param name="history_max_confirm_speed" value="3.0"/>
+    <param name="static_anchor_ego_correction_min_static_votes" value="16"/>
+    <param name="static_anchor_ego_correction_max_moving_votes" value="0"/>
+    <param name="static_dynamic_probe_min_progress_ratio" value="0.30"/>
+    <param name="static_dynamic_probe_speed_ratio" value="0.35"/>
+    <param name="static_dynamic_probe_residual_margin" value="0.02"/>
+    <param name="dynamic_bootstrap_min_tail_points" value="4"/>
+    <param name="dynamic_bootstrap_min_span" value="0.20"/>
+    <param name="dynamic_bootstrap_min_ff_speed" value="0.08"/>
+    <param name="dynamic_bootstrap_score_margin" value="0.08"/>
+    <param name="endpoint_recapture_min_frames" value="4"/>
+    <param name="raw_clip_projection_far_hold_max_time" value="0.80"/>
+    <param name="endpoint_recapture_confidence_gate" value="0.75"/>
+    <param name="dynamic_curve_cross_gate" value="1.20"/>
+    <param name="dynamic_curve_min_arc" value="0.20"/>
+    <param name="dynamic_curve_heading_gate" value="0.45"/>
+    <param name="yaw_mixing_freeze_requires_endpoint_near_path" value="true"/>
+    <param name="confirmed_curve_interp_ds" value="0.10"/>
+    <param name="ego_translation_observable_speed_gate" value="0.04"/>
+    <param name="confirmed_require_dynamic_motion_class" value="true"/>
+    <param name="relative_shortening_freeze_confirmed" value="true"/>
+    <param name="confirm_require_candidate_metadata" value="true"/>
+    <param name="disable_filter_speed_dynamic_when_ego_unobservable" value="true"/>
+    <param name="history_segment_break_gap" value="0.45"/>
+    <param name="lead_only_bootstrap_enabled" value="true"/>
+    <param name="lead_only_bootstrap_min_points" value="4"/>
+    <param name="lead_only_bootstrap_min_span" value="0.20"/>
+    <param name="lead_only_bootstrap_min_progress" value="0.12"/>
+    <param name="lead_only_bootstrap_min_ff_speed" value="0.08"/>
+    <param name="lead_only_bootstrap_max_imu_activity" value="0.015"/>
+    <param name="lead_only_bootstrap_static_residual_gate" value="0.025"/>
+    <param name="lead_speed_nominal_min" value="0.10"/>
+    <param name="lead_speed_nominal_max" value="0.50"/>
+    <param name="lead_speed_abs_max" value="0.80"/>
+    <param name="use_fusion_tracker" value="true"/>
+    <param name="fusion_meas_sigma_base" value="0.10"/>
+    <param name="fusion_meas_sigma_range_gain" value="0.015"/>
+    <param name="fusion_process_pos" value="0.03"/>
+    <param name="fusion_process_vel" value="0.08"/>
+    <param name="fusion_prob_alpha" value="0.25"/>
+    <param name="fusion_static_residual_gate" value="0.08"/>
+    <param name="fusion_dynamic_residual_margin" value="0.04"/>
+    <param name="fusion_hard_residual_gate_enabled" value="false"/>
+    <param name="fusion_dynamic_prob_bootstrap" value="0.55"/>
+    <param name="fusion_dynamic_prob_append" value="0.50"/>
+    <param name="fusion_static_prob_freeze" value="0.86"/>
+    <param name="fusion_append_min_distance" value="0.04"/>
+    <param name="fusion_append_max_interval" value="0.60"/>
+    <param name="fusion_bootstrap_min_span" value="0.20"/>
+    <param name="fusion_bootstrap_min_points" value="3"/>
+    <param name="fusion_cov_trace_gate" value="2.50"/>
+    <param name="fusion_pos_cov_gate" value="0.35"/>
+    <param name="fusion_yaw_freeze_activity" value="0.035"/>
+    <param name="fusion_relative_shorten_gate" value="0.04"/>
+    <param name="fusion_static_hold_frames" value="5"/>
+    <param name="fusion_ego_explained_hold_frames" value="5"/>
+    <param name="fusion_yaw_mix_hold_frames" value="10"/>
+    <param name="fusion_max_confirm_speed" value="0.80"/>
+    <param name="fusion_segment_break_gap" value="0.80"/>
+    <param name="fusion_reverse_progress_gate" value="0.05"/>
+    <param name="fusion_unobservable_cross_gate" value="0.45"/>
+    <param name="ego_explained_freeze_gate" value="0.03"/>
+    <param name="yaw_mix_confirm_freeze" value="false"/>
+    <param name="fusion_prob_decay_on_static" value="0.45"/>
+    <param name="lead_confirm_max_speed" value="0.80"/>
+    <param name="fusion_static_observation_hold_enabled" value="false"/>
+    <param name="fusion_static_observation_res_gate" value="0.08"/>
+    <param name="fusion_static_observation_speed_gate" value="0.06"/>
+    <param name="fusion_static_observation_step_gate" value="0.03"/>
+
+    <!-- raw_path: pure reconstructed lead-history in current base_link -->
+    <param name="raw_resample_ds" value="0.08"/>
+    <param name="raw_fit_ds" value="0.06"/>
+    <param name="raw_spline_passes" value="4"/>
+    <param name="raw_spline_alpha" value="0.45"/>
+    <param name="raw_tail_weight_scale" value="0.25"/>
+    <param name="raw_preserve_history_geometry" value="true"/>
+    <param name="raw_min_points_for_publish" value="2"/>
+    <param name="raw_min_span_for_publish" value="0.05"/>
+    <param name="raw_keep_behind_x" value="0.50"/>
+    <param name="raw_clip_to_ego_progress" value="true"/>
+    <param name="raw_spatial_window_mode" value="ego_progress_suffix"/>
+    <param name="raw_clip_use_current_lead_endpoint" value="true"/>
+    <param name="raw_clip_end_follow_lead_endpoint" value="false"/>
+    <param name="raw_clip_keep_history_tail_when_endpoint_behind" value="true"/>
+    <param name="raw_clip_endpoint_hysteresis" value="true"/>
+    <param name="raw_clip_max_s_jump" value="0.40"/>
+    <param name="raw_clip_max_s_step" value="0.08"/>
+    <param name="raw_clip_max_s_rate" value="1.20"/>
+    <param name="raw_clip_start_max_s_step" value="0.08"/>
+    <param name="raw_clip_start_max_s_rate" value="1.20"/>
+    <param name="raw_clip_endpoint_hold_time" value="0.80"/>
+    <param name="raw_clip_endpoint_projection_gate" value="0.75"/>
+    <param name="raw_clip_min_endpoint_confidence" value="0.55"/>
+    <param name="endpoint_recapture_min_frames" value="4"/>
+    <param name="raw_clip_projection_far_hold_max_time" value="0.80"/>
+    <param name="endpoint_recapture_confidence_gate" value="0.75"/>
+    <param name="endpoint_recapture_projection_gate" value="1.00"/>
+    <param name="endpoint_recapture_max_far_time" value="0.30"/>
+    <param name="raw_clip_start_search_window" value="1.20"/>
+    <param name="raw_clip_endpoint_search_window" value="1.50"/>
+    <param name="raw_clip_allow_endpoint_reorder" value="true"/>
+    <param name="raw_clip_valid_endpoint_hold_max_time" value="0.15"/>
+    <param name="raw_clip_missing_endpoint_hold_time" value="0.50"/>
+    <param name="raw_clip_stale_max_time" value="0.15"/>
+    <param name="raw_clip_min_visible_span" value="0.45"/>
+    <param name="raw_max_range" value="30.0"/>
+    <param name="raw_max_points" value="250"/>
+
+    <!-- reference_path: connector from ego origin + raw_path suffix -->
+    <param name="reference_join_min_forward_x" value="0.20"/>
+    <param name="reference_join_max_lateral" value="3.00"/>
+    <param name="reference_join_lookahead" value="0.20"/>
+    <param name="reference_join_skip_weight" value="0.20"/>
+    <param name="reference_join_curvature_weight" value="0.90"/>
+    <param name="reference_join_time_weight" value="0.60"/>
+    <param name="reference_join_progress_weight" value="0.25"/>
+    <param name="reference_join_s_window" value="2.00"/>
+    <param name="reference_join_mode" value="front_anchored"/>
+    <param name="reference_join_front_lookahead" value="0.25"/>
+    <param name="reference_join_max_step" value="0.08"/>
+    <param name="anchor_rebase_enabled" value="true"/>
+    <param name="anchor_rebase_xy_gate" value="0.05"/>
+    <param name="anchor_rebase_yaw_gate" value="0.03"/>
+    <param name="raw_output_segment_gap" value="0.45"/>
+    <param name="raw_output_heading_flip_gate" value="0.42"/>
+    <param name="raw_output_min_stable_span" value="0.45"/>
+    <param name="raw_front_jump_gate" value="0.35"/>
+    <param name="path_heading_recompute_min_ds" value="0.05"/>
+    <param name="reference_temporal_consistency" value="true"/>
+    <param name="reference_max_heading_step" value="0.08"/>
+    <param name="reference_publish_quality_gate_enabled" value="true"/>
+    <param name="reference_publish_require_control_valid" value="true"/>
+    <param name="reference_publish_hold_on_short_endpoint" value="true"/>
+    <param name="reference_publish_max_heading_jump_count" value="0"/>
+    <param name="reference_publish_min_points" value="4"/>
+    <param name="reference_publish_min_span" value="0.45"/>
+    <param name="reference_publish_hold_timeout" value="2.00"/>
+    <param name="reference_short_endpoint_only_when_confirmed_empty" value="true"/>
+    <param name="control_feasible_max_lateral" value="1.20"/>
+    <param name="control_feasible_max_heading" value="0.80"/>
+    <param name="reference_min_points" value="2"/>
+    <param name="reference_min_span" value="0.18"/>
+    <param name="reference_direct_attach_dist" value="0.12"/>
+    <param name="reference_connector_enable_dist" value="0.15"/>
+    <param name="reference_connector_resolution" value="0.08"/>
+    <param name="reference_connector_tangent_scale" value="0.65"/>
+    <param name="reference_connector_curvature_scale" value="1.00"/>
+    <param name="reference_splice_blend_length" value="0.60"/>
+    <param name="reference_resample_ds" value="0.08"/>
+    <param name="reference_sg_passes" value="1"/>
+    <param name="reference_max_length" value="20.0"/>
+    <param name="reference_follow_raw_only" value="false"/>
+    <param name="reference_publish_short_endpoint" value="false"/>
+    <param name="reference_short_endpoint_min_confirmed" value="4"/>
+    <param name="reference_short_endpoint_when_clip_stale" value="false"/>
+  </node>
+</launch>

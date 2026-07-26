@@ -1,132 +1,509 @@
 <?xml version="1.0"?>
-<!--
-改进版本的启动文件 - 针对切弯问题的优化参数配置
-
-主要改进：
-1. 增加q_y_和q_yaw_权重 - 强化急弯时的横向和航向跟踪
-2. 降低fit_max_rms_ - 更容易触发样条插值切换
-3. 调整heading_memory_alpha_ - 快速响应航向变化
-4. 优化max_heading_step_ - 允许更快的航向变化率
--->
 <launch>
-    <node pkg="move_car" type="control_pub" name="publish_speed_turn" output="screen">
-        <!-- 基础控制参数 -->
-        <param name="control_rate" value="20.0" />
-        <param name="car_vel_topic" value="/carvel" />
-        <param name="steer_sign" value="-1.0" />
-        <param name="carvel_angular_is_steer" value="false" />
-        <param name="carvel_yaw_rate_sign" value="1.0" />
-        <param name="compensation_gain" value="0.94" />
-        <param name="yaw_rate_filter_alpha" value="0.94" />
-        <param name="max_compensation_yaw_rate" value="0.90" />
-        <param name="min_compensation_speed" value="0.02" />
-        <param name="max_speed" value="0.50" />
-        <param name="max_accel" value="0.10" />
-        <param name="min_accel" value="-0.22" />
-        <param name="max_steer" value="0.38" />
-        <param name="max_steer_rate" value="0.06" />
-        
-        <!-- 跟踪目标参数 -->
-        <param name="desired_follow_distance" value="1.00" />
-        <param name="target_timeout" value="0.65" />
-        <param name="target_hold_timeout" value="1.80" />
-        <param name="reference_topic" value="/planner/reference_path" />
-        <param name="reference_timeout" value="0.25" />
-        <param name="reference_hold_timeout" value="0.80" />
-        <param name="reference_min_points" value="8" />
-        <param name="reference_sample_spacing" value="0.12" />
-        <param name="reference_anchor_forward_offset" value="0.10" />
-        <param name="reference_anchor_lateral_weight" value="1.80" />
-        <param name="reference_quality_span" value="0.80" />
-        <param name="reference_quality_points" value="18" />
-        <param name="path_curvature_speed_gain" value="2.20" />
-        <param name="path_curvature_change_speed_gain" value="3.20" />
-        <param name="path_heading_speed_gain" value="1.05" />
-        <param name="path_hold_speed_scale" value="0.85" />
-        <param name="path_confidence_floor" value="0.35" />
-        <param name="emergency_stop_distance" value="0.50" />
-        <param name="stop_buffer_distance" value="0.50" />
-        <param name="lateral_gate" value="1.60" />
-        <param name="min_forward_target_x" value="-0.20" />
-        
-        <!-- MPC规划参数 -->
-        <param name="horizon_steps" value="20" />
-        <param name="horizon_dt" value="0.10" />
-        <param name="reference_history_window" value="1.00" />
-        
-        <!-- 轨迹拟合参数 -->
-        <param name="fit_min_samples" value="4" />
-        <param name="fit_max_rms" value="0.30" />
-        <param name="fit_blend_gain" value="2.4" />
-        <param name="outlier_reject_distance" value="0.55" />
-        <param name="outlier_reject_speed" value="1.00" />
-        <param name="huber_delta" value="0.16" />
-        <param name="fit_ridge_lambda" value="0.55" />
-        
-        <!-- 低速处理参数 -->
-        <param name="low_speed_heading_threshold" value="0.12" />
-        <param name="low_speed_span_threshold" value="0.42" />
-        <param name="heading_memory_alpha" value="0.88" />
-        <param name="curvature_memory_alpha" value="0.78" />
-        
-        <!-- 曲率限制参数 -->
-        <param name="max_curvature" value="0.24" />
-        <param name="max_curvature_rate" value="0.045" />
-        <param name="max_heading_step" value="0.10" />
-        
-        <!-- 间隙控制参数 -->
-        <param name="gap_speed_gain" value="0.24" />
-        <param name="fit_bad_speed_scale" value="0.60" />
-        <param name="min_progress_speed" value="0.10" />
-        <param name="preview_speed_steps" value="5" />
+  <node pkg="move_car" type="control_pub" name="publish_speed_turn" output="screen">
+    <!-- Topics -->
+    <param name="reference_topic" value="/planner/reference_path"/>
+    <param name="reference_status_topic" value="/planner/reference_status"/>
+    <param name="raw_topic" value="/planner/raw_path"/>
+    <param name="tracked_topic" value="/pointpillars/tracked_objects"/>
+    <param name="obstacle_poses_topic" value="/pointpillars/poses"/>
+    <param name="filtered_cloud_topic" value="/filtered_cloud"/>
+    <param name="cluster_cloud_topic" value="/cluster_cloud"/>
+    <param name="car_topic" value="/car_message"/>
+    <param name="carvel_topic" value="/carvel"/>
+    <param name="imu_topic" value="/imu"/>
+    <param name="ned_odom_topic" value="/NED_odometry"/>
+    <param name="system_speed_topic" value="/system_speed"/>
+    <param name="cmd_topic" value="/cmd_vel"/>
 
-        <!-- 命令平滑参数（抑制左右抖动） -->
-        <param name="pose_alpha" value="0.20" />
-        <param name="yaw_alpha" value="0.12" />
-        <param name="velocity_alpha" value="0.10" />
-        <param name="speed_cmd_alpha" value="0.10" />
-        <param name="steer_cmd_alpha" value="0.08" />
-        
-        <!-- 线搜索参数 -->
-        <param name="line_search_decay" value="0.50" />
-        <param name="temporal_heading_weight" value="2.4" />
-        <param name="temporal_speed_weight" value="1.2" />
-        
-        <!-- 目标锁定参数 -->
-        <param name="lock_distance_gate" value="1.00" />
-        <param name="lock_yaw_gate" value="0.60" />
-        <param name="lock_hold_timeout" value="1.80" />
-        
-        <!-- 增强型Lagrange乘数法参数 -->
-        <param name="al_outer_iterations" value="3" />
-        <param name="al_violation_tolerance" value="0.02" />
-        <param name="mu_penalty" value="8.0" />
-        <param name="mu_growth" value="1.25" />
-        <param name="mu_penalty_max" value="120.0" />
-        <param name="lambda_max" value="400.0" />
-        <param name="lambda_decay" value="0.80" />
-        
-        <!-- MPC成本矩阵权重 - 关键改进！ -->
-        <param name="q_x" value="2.5" />
-        <param name="q_y" value="16.0" />
-        <param name="q_yaw" value="5.5" />
-        <param name="q_v" value="2.0" />
-        <param name="r_a" value="0.35" />
-        <param name="r_delta" value="0.85" />
-        <param name="r_da" value="1.40" />
-        <param name="r_ddelta" value="4.20" />
+    <!-- Vehicle and command interface -->
+    <param name="control_rate" value="30.0"/>
+    <param name="wheelbase" value="0.60"/>
+    <param name="v_min" value="0.10"/>
+    <param name="max_speed" value="0.50"/>
+    <param name="cruise_speed" value="0.32"/>
+    <param name="max_accel" value="0.28"/>
+    <param name="max_decel" value="0.36"/>
+    <param name="max_jerk" value="0.80"/>
+    <param name="max_steer" value="0.38"/>
+    <param name="max_steer_rate" value="1.00"/>
+    <param name="continuous_cruise_speed" value="0.27"/>
+    <param name="continuous_catchup_max_speed" value="0.40"/>
+    <param name="continuous_catchup_start_distance" value="2.30"/>
+    <param name="continuous_catchup_cte_gate" value="0.16"/>
+    <param name="continuous_catchup_yaw_error_gate" value="0.18"/>
+    <param name="continuous_catchup_yaw_rate_error_gate" value="0.16"/>
+    <param name="continuous_lateral_accel" value="0.050"/>
+    <param name="continuous_curve_min_speed" value="0.14"/>
+    <param name="continuous_curve_max_speed" value="0.32"/>
+    <param name="continuous_cte_low" value="0.08"/>
+    <param name="continuous_cte_high" value="0.35"/>
+    <param name="continuous_cte_min_speed" value="0.12"/>
+    <param name="continuous_actuator_lag_low" value="0.08"/>
+    <param name="continuous_actuator_lag_high" value="0.20"/>
+    <param name="continuous_actuator_min_speed" value="0.14"/>
+    <param name="continuous_horizon_reserve" value="0.10"/>
+    <param name="continuous_horizon_time_bias" value="0.60"/>
+    <param name="continuous_horizon_min_time" value="1.00"/>
+    <param name="continuous_horizon_min_speed" value="0.10"/>
+    <!-- Recoverable cross-track error must not erase the real remaining arc. -->
+    <param name="reference_recovery_projection_gate" value="0.60"/>
+    <param name="feedback_steer_sign" value="1.0"/>
+    <param name="cmd_steer_sign" value="1.0"/>
+    <param name="cmd_steer_scale" value="1.0"/>
+    <param name="wheel_speed_scale" value="0.001"/>
+    <param name="carvel_speed_scale" value="0.001"/>
+    <param name="carvel_angular_is_steer" value="true"/>
+    <param name="carvel_yaw_rate_sign" value="1.0"/>
+    <param name="system_speed_scale" value="1.0"/>
+    <param name="ned_speed_scale" value="1.0"/>
+    <param name="speed_filter_alpha" value="0.35"/>
+    <param name="steering_filter_alpha" value="0.45"/>
+    <param name="yaw_rate_filter_alpha" value="0.35"/>
+    <param name="yaw_rate_imu_timeout" value="0.30"/>
+    <param name="yaw_rate_imu_deadband" value="0.002"/>
+    <param name="yaw_rate_feedback_deadband" value="0.003"/>
+    <param name="yaw_rate_feedback_blend_when_imu_zero" value="0.85"/>
+    <param name="imu_yaw_zero_unavailable_time" value="1.00"/>
 
-        <!-- AL-iLQR 曲率跟踪权重（新增） -->
-        <param name="ilqr_w_curv" value="14.0" />
-        
-        <!-- 终端成本权重 -->
-        <param name="terminal_x_weight" value="4.0" />
-        <param name="terminal_y_weight" value="20.0" />
-        <param name="terminal_yaw_weight" value="7.0" />
-        
-        <!-- 约束违反惩罚 -->
-        <param name="speed_penalty" value="160.0" />
-        <param name="clearance_penalty" value="220.0" />
-        
-    </node>
+    <!-- Reference-path consumption only; reconstruction stays in trajectory_reconstructor. -->
+    <param name="reference_timeout" value="0.35"/>
+    <param name="raw_timeout" value="0.35"/>
+    <param name="allow_raw_path_fallback" value="false"/>
+    <param name="min_path_points" value="2"/>
+    <param name="min_path_span" value="0.12"/>
+    <param name="reference_quality_gate_enabled" value="true"/>
+    <param name="reference_max_abs_e_theta" value="1.20"/>
+    <param name="reference_e_theta_reject_gate" value="1.65"/>
+    <param name="reference_e_theta_reject_persist" value="0.80"/>
+    <param name="reference_max_abs_kappa0" value="1.35"/>
+    <param name="reference_max_fit_rms" value="0.18"/>
+    <param name="reference_max_heading_jump" value="0.75"/>
+    <param name="reference_max_kappa_jump" value="0.55"/>
+    <param name="kappa_degrade_gate" value="1.35"/>
+    <param name="kappa_reject_gate" value="1.70"/>
+    <param name="kappa_reject_persist" value="0.50"/>
+    <param name="reference_kappa_jump_reject_gate" value="1.60"/>
+    <param name="reference_kappa_jump_reject_persist" value="0.80"/>
+    <param name="degraded_speed_limit" value="0.10"/>
+    <param name="degraded_kappa_scale" value="0.55"/>
+    <param name="degraded_max_kappa_control" value="0.90"/>
+    <param name="degraded_max_steer" value="0.34"/>
+    <param name="degraded_steer_rate_scale" value="0.55"/>
+    <param name="candidate_kappa_eval_window" value="0.80"/>
+    <param name="reference_soft_timeout" value="0.60"/>
+    <param name="reference_hard_timeout" value="1.20"/>
+    <param name="reference_hold_timeout" value="0.80"/>
+    <param name="degraded_reference_min_span" value="1.20"/>
+    <param name="reference_bad_speed_scale" value="0.36"/>
+    <param name="held_reference_max_speed" value="0.10"/>
+    <param name="provisional_tail_curve_min_span" value="0.35"/>
+    <param name="provisional_tail_short_speed_limit" value="0.08"/>
+    <param name="curve_evidence_min_span" value="1.00"/>
+    <param name="curve_evidence_min_points" value="8"/>
+    <param name="curve_evidence_min_status_age" value="0.70"/>
+    <param name="short_path_guard_span" value="0.80"/>
+    <param name="control_recovery_ramp_seconds" value="0.50"/>
+    <param name="path_min_segment_length" value="0.015"/>
+    <param name="projection_lateral_weight" value="1.0"/>
+    <param name="max_path_curvature" value="1.50"/>
+    <param name="smooth_back_length" value="0.30"/>
+    <param name="smooth_front_length" value="2.40"/>
+    <!-- Executable references are expressed in base_link.  Only a synthetic
+         APPROACH connector is exactly origin-anchored; a projected immutable
+         suffix keeps its real lateral/heading error. -->
+    <param name="ego_anchor_origin_tolerance" value="0.005"/>
+    <param name="local_curvature_half_window" value="0.16"/>
+    <param name="smooth_min_points" value="6"/>
+    <param name="smooth_huber_delta" value="0.08"/>
+    <param name="smooth_ridge" value="0.0001"/>
+    <param name="smooth_max_rms" value="0.35"/>
+    <param name="smooth_newton_iterations" value="6"/>
+    <param name="smooth_max_curvature_rate" value="1.80"/>
+
+    <!-- Lead vehicle distance: 1.5m hard lower bound, 1.75m target, 2.0m normal upper band. -->
+    <param name="desired_follow_distance" value="1.75"/>
+    <param name="follow_distance_enabled" value="true"/>
+    <param name="follow_distance_min" value="1.50"/>
+    <param name="follow_distance_target" value="1.75"/>
+    <param name="follow_distance_max" value="2.00"/>
+    <param name="follow_distance_catchup_start" value="2.30"/>
+    <param name="follow_distance_band_speed_cap" value="0.18"/>
+    <param name="follow_distance_lead_speed_margin" value="0.04"/>
+    <param name="follow_distance_min_moving_cap" value="0.03"/>
+    <param name="follow_distance_gap_gain" value="0.22"/>
+    <param name="hard_stop_distance" value="0.65"/>
+    <param name="hard_stop_forward_x" value="-0.05"/>
+    <param name="target_min_forward_x" value="-0.10"/>
+    <param name="target_lateral_gate" value="3.00"/>
+    <param name="target_timeout" value="0.45"/>
+    <param name="target_pose_alpha" value="0.35"/>
+    <param name="target_yaw_alpha" value="0.20"/>
+    <param name="target_velocity_alpha" value="0.20"/>
+    <param name="target_range_alpha" value="0.55"/>
+    <param name="target_range_beta" value="0.12"/>
+    <param name="target_max_range_rate" value="1.0"/>
+    <param name="target_lost_range_rate_decay" value="0.82"/>
+    <param name="cth_time_headway" value="0.50"/>
+    <param name="cth_kp" value="0.22"/>
+    <param name="cth_kd" value="0.10"/>
+    <param name="cth_close_gap_slowdown_gain" value="0.40"/>
+    <param name="close_gap_min_speed_scale" value="0.45"/>
+    <param name="lost_target_speed_scale" value="0.75"/>
+
+    <!-- Independent collision stop latch. Hard stop follows the requested 0.5m physical distance. -->
+    <param name="collision_stop_enabled" value="true"/>
+    <param name="collision_stop_distance" value="0.50"/>
+    <param name="collision_resume_distance" value="0.55"/>
+    <param name="collision_observation_timeout" value="0.35"/>
+    <param name="collision_min_forward_x" value="0.0"/>
+    <param name="collision_lateral_gate" value="0.85"/>
+    <param name="collision_close_target_latch_enabled" value="true"/>
+    <param name="collision_close_target_latch_distance" value="1.00"/>
+    <param name="collision_close_target_latch_timeout" value="0.50"/>
+    <param name="collision_cloud_enabled" value="true"/>
+    <param name="collision_cloud_timeout" value="1.00"/>
+    <param name="collision_cloud_stride" value="1"/>
+    <param name="collision_cloud_min_x" value="-0.10"/>
+    <param name="collision_cloud_max_x" value="2.00"/>
+    <param name="collision_cloud_lateral_gate" value="1.10"/>
+    <param name="collision_cloud_min_z" value="-1.20"/>
+    <param name="collision_cloud_max_z" value="2.00"/>
+    <param name="collision_cloud_self_filter_enabled" value="true"/>
+    <param name="collision_cloud_self_min_x" value="-0.10"/>
+    <param name="collision_cloud_self_max_x" value="0.22"/>
+    <param name="collision_cloud_self_half_width" value="0.18"/>
+    <param name="collision_cloud_target_frame" value="base_link"/>
+    <param name="collision_tf_timeout" value="0.03"/>
+
+    <!-- CPS physical-risk observer -->
+    <param name="cps_alpha_steer" value="0.85"/>
+    <param name="cps_alpha_imu_z" value="0.035"/>
+    <param name="cps_gamma_max" value="0.80"/>
+    <param name="cps_steering_delay" value="0.16"/>
+    <param name="cps_imu_window" value="0.80"/>
+    <param name="cps_command_history" value="2.0"/>
+    <param name="cps_residual_deadband" value="0.025"/>
+    <param name="cps_residual_lpf_alpha" value="0.18"/>
+    <param name="cps_max_steering_residual_for_gamma" value="0.35"/>
+    <param name="cps_compensation_gain" value="0.08"/>
+    <param name="max_cps_comp" value="0.05"/>
+    <param name="residual_comp_pause_gate" value="0.18"/>
+
+    <!-- CPS-fused spatial speed QP in b=v^2 -->
+    <param name="horizon_steps" value="20"/>
+    <param name="spatial_step" value="0.10"/>
+    <param name="friction_mu_base" value="0.45"/>
+    <param name="gravity" value="9.80665"/>
+    <param name="curvature_epsilon" value="0.03"/>
+    <param name="cps_global_speed_gain" value="0.45"/>
+    <param name="sqp_w_time" value="0.25"/>
+    <param name="sqp_w_v" value="6.0"/>
+    <param name="sqp_w_accel" value="1.8"/>
+    <param name="sqp_w_jerk" value="6.0"/>
+    <param name="sqp_w_initial" value="9.0"/>
+    <param name="sqp_max_iter" value="4"/>
+    <param name="sqp_friction_circle_margin" value="0.82"/>
+    <param name="sqp_min_curve_speed" value="0.06"/>
+
+    <!-- Spatial-domain SLQR steering controller with recursive-feasibility fallback -->
+    <param name="slqr_horizon_steps" value="20"/>
+    <param name="slqr_max_delta_step" value="0.08"/>
+    <param name="slqr_rate_from_actuator" value="true"/>
+    <param name="slqr_rate_step_scale" value="1.50"/>
+    <param name="slqr_q_y" value="26.0"/>
+    <param name="slqr_q_theta" value="7.0"/>
+    <param name="slqr_q_terminal_y" value="90.0"/>
+    <param name="slqr_q_terminal_theta" value="40.0"/>
+    <param name="slqr_r_delta" value="0.55"/>
+    <param name="slqr_r_delta_rate" value="24.0"/>
+    <param name="slqr_r_feedforward" value="0.9"/>
+    <param name="slqr_r_feedforward_straight" value="0.15"/>
+    <param name="slqr_straight_q_scale" value="0.45"/>
+    <param name="slqr_straight_r_delta_scale" value="2.4"/>
+    <param name="slqr_straight_r_delta_rate_scale" value="2.2"/>
+    <param name="slqr_yaw_rate_penalty" value="2.0"/>
+    <param name="slqr_straight_yaw_rate_penalty" value="24.0"/>
+    <param name="slqr_steering_feedback_penalty" value="0.25"/>
+    <param name="slqr_straight_steering_feedback_penalty" value="2.5"/>
+    <param name="slqr_fallback_cost_ratio" value="1.45"/>
+    <param name="slqr_error_guard_y" value="3.0"/>
+    <param name="slqr_error_guard_theta" value="1.40"/>
+    <param name="slqr_slack_l1" value="12.0"/>
+    <param name="slqr_slack_l2" value="22.0"/>
+    <param name="slqr_soft_y" value="0.16"/>
+    <param name="slqr_soft_theta" value="0.42"/>
+    <param name="yaw_envelope_weight" value="35.0"/>
+    <param name="yaw_envelope_mu_scale" value="0.75"/>
+    <param name="yaw_envelope_speed_floor" value="0.08"/>
+    <param name="yaw_envelope_speed_scale" value="0.70"/>
+    <param name="barrier_weight" value="0.020"/>
+    <param name="barrier_rate_weight" value="0.010"/>
+    <param name="barrier_adapt_low_margin" value="0.001"/>
+    <param name="barrier_adapt_recover_margin" value="0.08"/>
+    <param name="barrier_adapt_trigger_count" value="5"/>
+    <param name="barrier_adapt_scale" value="0.55"/>
+    <param name="barrier_adapt_speed_scale" value="0.75"/>
+
+    <!-- Yaw damping and conservative curvature shaping for anti-sway behavior -->
+    <param name="yaw_damping_gain" value="0.10"/>
+    <param name="max_yaw_damping_delta" value="0.08"/>
+    <param name="yaw_rate_slow_gate" value="0.08"/>
+    <param name="yaw_rate_speed_scale" value="0.65"/>
+    <param name="kappa_control_alpha" value="0.35"/>
+    <param name="kappa_preview_count" value="3"/>
+    <param name="kappa_preview_mix" value="0.40"/>
+    <param name="control_curvature_ignore_front_s" value="0.25"/>
+    <param name="control_curvature_trim_start_s" value="0.40"/>
+    <param name="control_curvature_trim_end_s" value="1.50"/>
+    <param name="straight_fit_min_s" value="0.40"/>
+    <param name="straight_fit_max_s" value="2.00"/>
+    <param name="straight_fit_min_points" value="5"/>
+    <param name="straight_fit_huber_delta" value="0.06"/>
+    <param name="straight_lock_enabled" value="true"/>
+    <param name="straight_lock_fit_rms_gate" value="0.04"/>
+    <param name="straight_lock_fit_rms_exit_gate" value="0.08"/>
+    <param name="straight_lock_yaw_gate" value="0.18"/>
+    <param name="straight_lock_yaw_exit_gate" value="0.30"/>
+    <param name="straight_lock_kappa_gate" value="0.35"/>
+    <param name="straight_lock_kappa_exit_gate" value="0.55"/>
+    <param name="straight_lock_enter_time" value="0.10"/>
+    <param name="straight_lock_exit_time" value="0.20"/>
+    <param name="straight_lock_max_kappa" value="0.10"/>
+    <param name="straight_lock_kappa_scale" value="0.10"/>
+    <param name="straight_delta_ff_limit" value="0.06"/>
+    <param name="straight_delta_deadband" value="0.025"/>
+    <param name="straight_yaw_recovery_gate" value="0.045"/>
+    <param name="straight_yaw_recovery_release_gate" value="0.030"/>
+    <param name="straight_yaw_recovery_release_time" value="0.40"/>
+    <param name="straight_yaw_recovery_speed_limit" value="0.12"/>
+    <param name="straight_yaw_damping_gain" value="0.16"/>
+    <param name="straight_max_steer" value="0.22"/>
+    <param name="straight_steer_rate_scale" value="0.45"/>
+    <param name="straight_sway_speed_limit" value="0.16"/>
+    <param name="heading_consistency_gate" value="0.22"/>
+    <param name="bias_learning_enabled" value="true"/>
+    <param name="track_k_course" value="0.45"/>
+    <param name="track_k_y" value="0.85"/>
+    <param name="track_k_ey_rate" value="0.12"/>
+    <param name="track_k_yaw_rate" value="0.22"/>
+    <param name="track_k_pp_y" value="0.45"/>
+    <param name="track_k_pp_curve" value="0.24"/>
+    <param name="track_k_inside" value="1.20"/>
+    <param name="inside_error_gate" value="0.010"/>
+    <param name="inside_error_full" value="0.050"/>
+    <param name="inside_ff_reduce_max" value="0.45"/>
+    <param name="front_axle_tracking_enabled" value="true"/>
+    <param name="corner_cut_gain" value="1.80"/>
+    <param name="corner_cut_speed_scale" value="0.75"/>
+    <param name="curve_lookahead_inside_scale" value="0.65"/>
+    <param name="track_k_preview_yaw" value="0.10"/>
+    <param name="track_k_steering_feedback" value="0.16"/>
+    <param name="track_k_soft" value="0.20"/>
+    <param name="track_delta_max" value="0.32"/>
+    <param name="preview_kappa_pp_abs_limit" value="1.70"/>
+    <param name="preview_kappa_pp_ref_margin" value="0.50"/>
+    <param name="preview_kappa_pp_straight_limit" value="0.08"/>
+    <param name="straight_guard_kappa_gate" value="0.12"/>
+    <param name="straight_guard_curve_gate" value="0.20"/>
+    <param name="curve_evidence_min_yaw_change" value="0.10"/>
+    <param name="curve_evidence_min_consistency" value="0.60"/>
+    <param name="straight_guard_preview_min_x" value="0.60"/>
+    <param name="straight_guard_lateral_deadband" value="0.035"/>
+    <param name="straight_guard_lateral_limit" value="0.06"/>
+    <param name="straight_guard_delta_max" value="0.10"/>
+    <param name="straight_guard_speed_limit" value="0.10"/>
+    <param name="low_confidence_speed_limit" value="0.10"/>
+    <param name="sharp_entry_turn_blend_min" value="0.85"/>
+    <param name="sharp_entry_kappa_gate" value="1.00"/>
+    <param name="lateral_cancel_limit_ratio" value="0.25"/>
+    <param name="lateral_cancel_limit_base" value="0.05"/>
+    <param name="yaw_oversteer_soft_gate" value="0.070"/>
+    <param name="yaw_oversteer_hard_gate" value="0.115"/>
+    <param name="yaw_oversteer_delta_scale" value="0.70"/>
+    <param name="track_slqr_max_weight" value="1.00"/>
+    <param name="preview_min" value="0.25"/>
+    <param name="preview_max" value="0.55"/>
+    <param name="preview_lookahead_gain" value="0.70"/>
+    <param name="preview_curve_lookahead" value="0.35"/>
+    <param name="preview_curve_lookahead_min" value="0.25"/>
+    <param name="preview_curve_lookahead_max" value="0.55"/>
+    <param name="preview_entry_min" value="0.35"/>
+    <param name="preview_entry_max" value="0.50"/>
+    <param name="preview_turn_entry_stop_margin" value="0.10"/>
+    <param name="preview_actuator_delay_time" value="0.50"/>
+    <param name="preview_actuator_delay_max_distance" value="0.14"/>
+    <param name="steering_exec_probe_min" value="0.06"/>
+    <param name="steering_exec_probe_max" value="0.20"/>
+    <param name="steering_exec_probe_half_window" value="0.08"/>
+    <param name="speed_curvature_preview_start" value="0.35"/>
+    <param name="speed_curvature_preview_end" value="0.55"/>
+    <param name="preview_turn_entry_curve_probe" value="0.06"/>
+    <param name="preview_curve_kappa_low" value="0.15"/>
+    <param name="preview_curve_kappa_high" value="0.65"/>
+    <param name="preview_ignore_front_s" value="0.30"/>
+    <param name="preview_kappa_path_window" value="0.35"/>
+    <param name="preview_reference_kappa_start_s" value="0.15"/>
+    <param name="preview_reference_kappa_end_s" value="0.55"/>
+    <param name="preview_reference_kappa_abs_limit" value="2.00"/>
+    <param name="preview_kappa_path_weight" value="0.15"/>
+    <param name="preview_yaw_delta_limit" value="0.08"/>
+    <param name="preview_yaw_flip_gate" value="1.20"/>
+    <param name="preview_yaw_valid_kappa_gate" value="0.10"/>
+    <param name="preview_yaw_valid_lateral_gate" value="0.05"/>
+    <param name="preview_sign_conflict_kappa_gate" value="0.08"/>
+    <param name="curve_blend_kappa_low" value="0.12"/>
+    <param name="curve_blend_kappa_high" value="0.35"/>
+    <param name="kappa_ref_lpf_alpha" value="0.38"/>
+    <param name="kappa_ref_rate_limit" value="1.20"/>
+    <param name="curve_speed_kappa_gate" value="0.18"/>
+    <param name="curve_speed_limit" value="0.16"/>
+    <param name="sharp_curve_kappa_gate" value="0.95"/>
+    <param name="sharp_curve_speed_limit" value="0.12"/>
+    <param name="target_lost_curve_blend_gate" value="0.20"/>
+    <param name="target_lost_curve_speed_limit" value="0.10"/>
+    <param name="preview_curve_speed_kappa_low" value="0.35"/>
+    <param name="preview_curve_speed_kappa_high" value="0.95"/>
+    <param name="preview_curve_speed_limit_low" value="0.24"/>
+    <param name="preview_curve_speed_limit_high" value="0.12"/>
+    <param name="sign_conflict_speed_limit" value="0.16"/>
+    <param name="conditioner_invalid_speed_limit" value="0.08"/>
+    <param name="curve_recovery_min_speed" value="0.12"/>
+    <param name="inside_error_speed_scale_max" value="0.25"/>
+    <param name="visual_gap_start" value="2.30"/>
+    <param name="visual_gap_full" value="3.30"/>
+    <param name="visual_gap_close" value="1.80"/>
+    <param name="visual_catchup_max_speed" value="0.30"/>
+    <param name="visual_catchup_straight_floor" value="0.22"/>
+    <param name="visual_catchup_curve_floor" value="0.16"/>
+    <param name="visual_catchup_sharp_floor" value="0.11"/>
+    <param name="visual_catchup_yaw_gate" value="0.075"/>
+    <param name="visual_catchup_inside_gate" value="0.060"/>
+    <param name="risk_inside_error_gate" value="0.080"/>
+    <param name="gap_speed_floor_start" value="2.70"/>
+    <param name="gap_curve_speed_floor" value="0.16"/>
+    <param name="gap_straight_speed_floor" value="0.20"/>
+    <param name="gap_sharp_speed_floor" value="0.13"/>
+    <param name="tracking_speed_use_kappa_scale" value="false"/>
+    <param name="conditioner_start_s" value="0.25"/>
+    <param name="conditioner_end_s" value="2.00"/>
+    <param name="conditioner_min_points" value="7"/>
+    <param name="conditioner_huber_delta" value="0.08"/>
+    <param name="conditioner_ridge" value="0.0001"/>
+    <param name="conditioner_max_rms" value="0.16"/>
+    <param name="conditioner_max_abs_kappa" value="1.80"/>
+    <param name="conditioner_max_kappa_rate" value="3.00"/>
+    <param name="conditioner_turn_entry_margin" value="0.25"/>
+    <param name="conditioner_turn_blend_distance" value="0.25"/>
+    <param name="conditioner_turn_entry_kappa_gate" value="0.28"/>
+    <param name="conditioner_turn_entry_cumulative_yaw_gate" value="0.16"/>
+    <param name="conditioner_turn_entry_min_curve_length" value="0.18"/>
+    <param name="conditioner_straight_force_kappa_gate" value="0.06"/>
+    <param name="conditioner_curve_fit_window" value="1.20"/>
+    <param name="conditioner_invalid_raw_kappa_gate" value="4.00"/>
+    <param name="preview_speed_start_s" value="0.60"/>
+    <param name="preview_speed_end_s" value="1.20"/>
+    <param name="track_course_filter_alpha" value="0.30"/>
+    <param name="track_ey_rate_alpha" value="0.28"/>
+    <param name="track_course_ey_rate_gain" value="0.45"/>
+    <param name="track_beta_gain" value="0.65"/>
+    <param name="track_imu_yaw_course_gain" value="0.10"/>
+    <param name="track_course_slow_gate" value="0.25"/>
+    <param name="track_course_crawl_gate" value="0.55"/>
+    <param name="track_lateral_slow_gate" value="0.05"/>
+    <param name="track_lateral_crawl_gate" value="0.10"/>
+    <param name="track_min_speed_scale" value="0.45"/>
+    <param name="bias_learning_rate" value="0.015"/>
+    <param name="bias_leak_rate" value="0.003"/>
+    <param name="bias_max_delta" value="0.08"/>
+    <param name="bias_min_speed" value="0.08"/>
+    <param name="bias_max_speed" value="0.25"/>
+    <param name="bias_max_abs_kappa" value="0.12"/>
+    <param name="bias_max_abs_yaw_rate" value="0.10"/>
+    <param name="bias_residual_suspend_gate" value="0.16"/>
+    <param name="bias_lateral_weight" value="0.45"/>
+    <param name="bias_course_weight" value="0.55"/>
+    <param name="bias_yaw_weight" value="0.20"/>
+    <param name="oscillation_window" value="0.80"/>
+    <param name="oscillation_deadband" value="0.025"/>
+    <param name="oscillation_flip_gate" value="3"/>
+    <param name="oscillation_speed_scale" value="0.70"/>
+    <param name="oscillation_steer_rate_scale" value="0.55"/>
+    <param name="steer_sign_diag_window" value="1.0"/>
+    <param name="steer_sign_diag_min_corr" value="0.50"/>
+    <param name="tracking_filter_alpha_y" value="0.30"/>
+    <param name="tracking_filter_alpha_theta" value="0.24"/>
+    <param name="tracking_filter_alpha_kappa" value="0.28"/>
+    <param name="tracking_filter_alpha_yaw_rate" value="0.35"/>
+    <param name="tracking_filter_theta_innovation_gate" value="0.55"/>
+
+    <!-- Steering dead-time compensation -->
+    <param name="delay_compensation_enabled" value="true"/>
+    <param name="steering_delay_seconds" value="0.50"/>
+    <param name="steering_delay_steps" value="19"/>
+    <param name="delay_derivative_gain" value="0.0"/>
+    <param name="max_delay_comp" value="0.06"/>
+    <param name="delta_comp_lpf_alpha" value="0.22"/>
+    <param name="comp_deadband" value="0.004"/>
+    <param name="steering_history_seconds" value="2.0"/>
+
+    <!-- Debug CSV logs: truncated and recreated on every node startup. -->
+    <param name="enable_debug_csv_logs" value="true"/>
+    <param name="debug_log_dir" value="/home/ubuntu/drive_car_copy/cdata"/>
+    <param name="runtime_debug_file" value="runtime_debug.csv"/>
+    <param name="path_debug_file" value="path_snapshot.csv"/>
+    <param name="profile_debug_file" value="profile_debug.csv"/>
+    <param name="profile_log_stride" value="3"/>
+    <param name="runtime_log_stride" value="3"/>
+    <param name="path_log_stride" value="10"/>
+    <param name="debug_flush_period" value="0.75"/>
+
+    <!-- Command smoothing and fail-safe behavior -->
+    <param name="speed_cmd_alpha" value="0.32"/>
+    <param name="speed_cmd_alpha_up" value="0.36"/>
+    <param name="speed_cmd_alpha_down" value="0.48"/>
+    <param name="steer_cmd_alpha" value="0.32"/>
+    <param name="steer_cmd_alpha_curve" value="0.36"/>
+    <param name="steer_cmd_alpha_cross" value="0.65"/>
+    <param name="steer_cmd_alpha_error" value="0.44"/>
+    <param name="max_steer_rate_cross" value="1.60"/>
+    <param name="max_steer_rate_curve" value="1.35"/>
+    <param name="max_steer_rate_error" value="1.35"/>
+    <param name="steer_curve_kappa_rate_gate" value="0.70"/>
+    <param name="steer_curve_min_suffix_span" value="0.50"/>
+    <param name="tracking_error_recovery_gate" value="0.12"/>
+    <param name="tracking_error_recovery_full" value="0.35"/>
+    <param name="tracking_error_recovery_min_speed" value="0.12"/>
+    <param name="tracking_error_recovery_max_speed" value="0.18"/>
+    <param name="tracking_confidence_catchup_gate" value="0.55"/>
+    <param name="tracking_confidence_low_gate" value="0.38"/>
+    <param name="reference_latency_speed_safety_span" value="0.65"/>
+    <param name="reference_latency_speed_min_latency" value="0.50"/>
+    <param name="reference_latency_speed_min_cap" value="0.10"/>
+    <param name="reference_latency_speed_span_gain" value="0.75"/>
+    <param name="flatness_delta_rate_gain" value="0.45"/>
+    <param name="flatness_delta_rate_max" value="1.20"/>
+    <param name="flatness_delta_ff_max" value="0.045"/>
+    <param name="flatness_delta_preview_time" value="0.08"/>
+    <param name="front_axle_cps_filter_tau" value="0.18"/>
+    <param name="front_axle_risk_gate" value="0.12"/>
+    <param name="front_axle_risk_full" value="0.35"/>
+    <param name="front_axle_rate_gate" value="0.08"/>
+    <param name="front_axle_rate_full" value="0.35"/>
+    <param name="front_axle_yaw_error_gate" value="0.12"/>
+    <param name="reference_resync_min_health" value="0.70"/>
+    <param name="reference_health_curve_gate" value="0.65"/>
+    <param name="reference_health_catchup_gate" value="0.70"/>
+    <param name="reference_health_kappa_scale_min" value="0.15"/>
+    <param name="reference_resync_max_full_yaw_jump" value="0.80"/>
+    <param name="reference_resync_min_span" value="0.80"/>
+    <param name="reference_resync_max_abs_e_theta" value="1.20"/>
+    <param name="reference_resync_duration" value="0.55"/>
+    <param name="reference_resync_speed_min" value="0.10"/>
+    <param name="reference_resync_speed_max" value="0.16"/>
+    <param name="degraded_hold_max_steer" value="0.10"/>
+    <param name="degraded_curve_max_steer" value="0.24"/>
+    <param name="stale_path_stop" value="true"/>
+    <param name="publish_zero_on_stop" value="false"/>
+  </node>
 </launch>

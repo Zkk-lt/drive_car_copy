@@ -1,0 +1,3 @@
+NODE_PID=29311
+NODE_EXE=/home/ubuntu/drive_car_copy/devel/lib/move_car/trajectory_reconstructor
+PREFLIGHT_OK=1

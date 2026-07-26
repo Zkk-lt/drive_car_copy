@@ -1,0 +1,4 @@
+ROS_PACKAGE_PATH=/home/ubuntu/drive_car_copy/src:/home/ubuntu/drive_car/src:/opt/ros/melodic/share
+ROSPACK_MOVE_CAR=/home/ubuntu/drive_car_copy/src/move_car
+LAUNCH_FILE=/home/ubuntu/drive_car_copy/src/move_car/launch/trajectory_reconstructor.launch
+ARCHIVED_PREVIOUS_RUN=run_archives/pre_current_baseline_20260715_161917
