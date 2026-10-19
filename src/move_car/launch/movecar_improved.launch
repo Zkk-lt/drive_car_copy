@@ -33,7 +33,7 @@
     <param name="continuous_catchup_cte_gate" value="0.16"/>
     <param name="continuous_catchup_yaw_error_gate" value="0.18"/>
     <param name="continuous_catchup_yaw_rate_error_gate" value="0.16"/>
-    <param name="continuous_lateral_accel" value="0.050"/>
+    <param name="continuous_lateral_accel" value="0.25"/>
     <param name="continuous_curve_min_speed" value="0.14"/>
     <param name="continuous_curve_max_speed" value="0.32"/>
     <param name="continuous_cte_low" value="0.08"/>
@@ -121,18 +121,18 @@
     <param name="smooth_newton_iterations" value="6"/>
     <param name="smooth_max_curvature_rate" value="1.80"/>
 
-    <!-- Lead vehicle distance: 1.5m hard lower bound, 1.75m target, 2.0m normal upper band. -->
+    <!-- Target-reference distance: stop at 0.5m; linear cap to 0.18m/s at 2m. -->
     <param name="desired_follow_distance" value="1.75"/>
     <param name="follow_distance_enabled" value="true"/>
-    <param name="follow_distance_min" value="1.50"/>
+    <param name="follow_distance_min" value="0.50"/>
     <param name="follow_distance_target" value="1.75"/>
     <param name="follow_distance_max" value="2.00"/>
     <param name="follow_distance_catchup_start" value="2.30"/>
-    <param name="follow_distance_band_speed_cap" value="0.18"/>
+    <param name="follow_distance_band_speed_cap" value="0.48"/>
     <param name="follow_distance_lead_speed_margin" value="0.04"/>
     <param name="follow_distance_min_moving_cap" value="0.03"/>
     <param name="follow_distance_gap_gain" value="0.22"/>
-    <param name="hard_stop_distance" value="0.65"/>
+    <param name="hard_stop_distance" value="0.50"/>
     <param name="hard_stop_forward_x" value="-0.05"/>
     <param name="target_min_forward_x" value="-0.10"/>
     <param name="target_lateral_gate" value="3.00"/>

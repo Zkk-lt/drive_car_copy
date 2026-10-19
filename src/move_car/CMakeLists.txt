@@ -58,6 +58,8 @@ find_package(Eigen3 REQUIRED)
  add_message_files(
    FILES
    car_parameter.msg
+   HistoryTrackingPoint.msg
+   HistoryTrackingSnapshot.msg
 #   Message1.msg
 #   Message2.msg
  )
@@ -80,6 +82,7 @@ find_package(Eigen3 REQUIRED)
  generate_messages(
    DEPENDENCIES
    std_msgs
+   geometry_msgs
  )
 
 ################################################
@@ -151,6 +154,8 @@ link_directories(
 # add_executable(movecar src/movecar.cpp)
 add_executable(control_pub src/control_pub.cpp)
 add_executable(trajectory_reconstructor src/trajectory_reconstructor.cpp)
+target_compile_features(control_pub PRIVATE cxx_std_14)
+target_compile_features(trajectory_reconstructor PRIVATE cxx_std_14)
 ## Rename C++ executable without prefix
 ## The above recommended prefix causes long target names, the following renames the
 ## target back to the shorter version for ease of user use

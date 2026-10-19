@@ -18,6 +18,7 @@
 #include <Eigen/Dense>
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <deque>
@@ -45,6 +46,8 @@ double wrapAngle(double angle) {
 double hypot2(double x, double y) {
   return std::sqrt(x * x + y * y);
 }
+
+double square(double x) { return x*x; }
 
 double pointDistance(double x0, double y0, double x1, double y1) {
   return hypot2(x1 - x0, y1 - y0);
@@ -80,12 +83,19 @@ using EgoPose2D = EgoState;
 
 struct HistoryPoint2D {
   ros::Time stamp;
+  ros::Time observation_support_start;
+  uint64_t source_id = 0;
+  uint64_t source_end_id = 0;
+  double source_fraction = 0.0;
+  uint64_t segment_id = 0;
+  double history_s = 0.0;
   double x = 0.0;
   double y = 0.0;
   double heading = 0.0;
   double speed = 0.0;
   double curvature = 0.0;
   bool predicted = false;
+  bool execution_only = false;
   double weight = 1.0;
   double ego_turn_contamination_score = 0.0;
   bool heading_decoupled_by_ego_turn = false;
@@ -105,10 +115,12 @@ struct LocalPathPoint {
   double y = 0.0;
   double yaw = 0.0;
   double curvature = 0.0;
+  bool analytic_geometry = false;
 };
 
 struct LeadNode {
   ros::Time stamp;
+  ros::Time observation_support_start;
   double x = 0.0;
   double y = 0.0;
   double yaw = 0.0;
@@ -145,6 +157,11 @@ struct LeadNode {
 };
 
 struct RawTrailPoint {
+  uint64_t source_id=0,source_end_id=0,segment_id=0;
+  bool predicted=false;
+  bool execution_only=false;
+  ros::Time observation_support_start;
+  double source_fraction=0.,history_s=0.;
   double s = 0.0;
   double t = 0.0;
   double x = 0.0;
@@ -163,6 +180,7 @@ struct RefPoint {
   double kappa = 0.0;
   double v_ref = 0.0;
   double a_ref = 0.0;
+  bool analytic_geometry = false;
 };
 
 LocalPathPoint localPathPointFromRef(const RefPoint& ref) {
@@ -171,6 +189,7 @@ LocalPathPoint localPathPointFromRef(const RefPoint& ref) {
   pt.y = ref.y;
   pt.yaw = ref.yaw;
   pt.curvature = ref.kappa;
+  pt.analytic_geometry = ref.analytic_geometry;
   return pt;
 }
 
@@ -214,6 +233,7 @@ double polylineLengthWorld(const std::deque<HistoryPoint2D>& pts) {
 }
 
 struct TrackerDebugState {
+  bool reference_geometry_valid = false;
   std::string projector_reason = "init";
   std::string history_reason = "init";
   std::string raw_reason = "init";
@@ -331,6 +351,30 @@ struct TrackerDebugState {
   double candidate_vs_published_span_diff = 0.0;
   bool raw_direct_publish = false;
   bool connector_used = false;
+  double origin_rate_cap=0.,origin_residual=0.,origin_history_error=0.;
+  double origin_history_yaw=0.,origin_query_dt=0.,origin_fit_adjust=0.;
+  std::string origin_mode="unavailable",origin_reject="none";
+  bool origin_history_supported=false;
+  double origin_remaining=0.,origin_candidate_stamp=0.,origin_cache_age=-1.;
+  std::string origin_candidate_reject="none";
+  bool origin_cached=false;
+  bool origin_prefix_only=false;
+  double origin_fit_length=0.10;
+  double origin_along=0.,origin_initial_kappa=0.,origin_longest_prefix=0.;
+  int origin_steer_rejects=0,origin_initial_rejects=0,origin_short_prefixes=0,origin_projection_rejects=0;
+  std::string recovery_reason="none";
+  uint64_t recovery_from_segment=0,recovery_to_segment=0;
+  double recovery_gap=0.,recovery_gap_time=0.,recovery_fit_error=0.;
+  bool recovery_active=false;
+  std::string recovery_candidate_reject="none",recovery_replan_trigger="none";
+  double recovery_prefix_span=0.,recovery_stopping_margin=0.,recovery_prefix_speed_cap=0.;
+  bool recovery_replanned=false;
+  int recovery_search_trials=0,recovery_candidates=0,recovery_origin_attempts=0;
+  int recovery_steer_rejects=0,recovery_rate_rejects=0,recovery_shape_rejects=0;
+  double recovery_context_span=0.;
+  bool recovery_search_cached=false,recovery_search_deferred=false;
+  std::string geometry_split_reason="none",execution_repair_kind="none";
+  double geometry_split_before=0.,geometry_split_after=0.;
   int connector_join_index = -1;
   double connector_span = 0.0;
   double suffix_span = 0.0;
@@ -456,6 +500,29 @@ void transformWorldToLocal(const EgoPose2D& ego,
   *local_y = -s * dx + c * dy;
 }
 
+// Internal ego integration is rear-axle based; public paths are body-center based.
+void worldToBodyCenter(const EgoPose2D& ego, double x, double y, double* lx, double* ly) {
+  transformWorldToLocal(ego, x, y, lx, ly);
+  *lx -= 0.30;
+}
+
+void bodyCenterToWorld(const EgoPose2D& ego, double x, double y, double* wx, double* wy) {
+  transformLocalToWorld(ego, x + 0.30, y, wx, wy);
+}
+
+bool supportedHistoryEdge(const HistoryPoint2D& a, const HistoryPoint2D& b) {
+  if (a.segment_id && b.segment_id && a.segment_id != b.segment_id) return false;
+  if (a.stamp.isZero() || b.stamp.isZero()) return false;
+  const double dt = (b.stamp - a.stamp).toSec();
+  // Confirmation can pause while accepted measurements remain continuous.
+  const bool observed_between = !b.observation_support_start.isZero() &&
+      b.observation_support_start <= a.stamp;
+  if(!a.observation_support_start.isZero() && !b.observation_support_start.isZero() &&
+     !observed_between)return false;
+  return dt >= 0.0 && (dt <= 2.0 || observed_between) &&
+      pointDistance(a.x,a.y,b.x,b.y) <= 0.15 + 0.8*dt;
+}
+
 void recomputeHeading(std::vector<HistoryPoint2D>& pts) {
   if (pts.size() < 2) {
     return;
@@ -551,7 +618,8 @@ void recomputeLocalHeading(std::vector<LocalPathPoint>& pts) {
 }
 
 std::vector<HistoryPoint2D> removeNearDuplicatePoints(const std::vector<HistoryPoint2D>& in,
-                                                      double dist_eps) {
+                                                      double dist_eps,
+                                                      bool preserve_endpoints = false) {
   if (in.empty()) {
     return in;
   }
@@ -560,6 +628,14 @@ std::vector<HistoryPoint2D> removeNearDuplicatePoints(const std::vector<HistoryP
   out.reserve(in.size());
   out.push_back(in.front());
   for (size_t i = 1; i < in.size(); ++i) {
+    if(preserve_endpoints) {
+      // Measure from a retained anchor, not a continually replaced point.
+      const bool boundary=!supportedHistoryEdge(in[i-1],in[i]) ||
+          (i+1<in.size() && !supportedHistoryEdge(in[i],in[i+1]));
+      if(boundary || i+1==in.size() ||
+         pointDistance(out.back().x,out.back().y,in[i].x,in[i].y)>=dist_eps)out.push_back(in[i]);
+      continue;
+    }
     if (pointDistance(out.back().x, out.back().y, in[i].x, in[i].y) >= dist_eps) {
       out.push_back(in[i]);
     } else {
@@ -603,13 +679,20 @@ std::vector<HistoryPoint2D> resampleWorldByArcLength(const std::vector<HistoryPo
     const double denom = std::max(1e-6, arc[seg + 1] - arc[seg]);
     const double t = clampValue((sk - arc[seg]) / denom, 0.0, 1.0);
     HistoryPoint2D pt;
+    pt.source_id = in[seg].source_id;
+    pt.source_end_id = in[seg + 1].source_id;
+    pt.source_fraction = t;
+    pt.segment_id = in[seg].segment_id;
+    pt.history_s = in[seg].history_s + t*(in[seg+1].history_s-in[seg].history_s);
     pt.stamp = (t < 0.5) ? in[seg].stamp : in[seg + 1].stamp;
+    pt.observation_support_start = in[seg + 1].observation_support_start;
     pt.x = in[seg].x + t * (in[seg + 1].x - in[seg].x);
     pt.y = in[seg].y + t * (in[seg + 1].y - in[seg].y);
     pt.heading = wrapAngle(in[seg].heading + t * wrapAngle(in[seg + 1].heading - in[seg].heading));
     pt.speed = in[seg].speed + t * (in[seg + 1].speed - in[seg].speed);
     pt.curvature = in[seg].curvature + t * (in[seg + 1].curvature - in[seg].curvature);
     pt.predicted = in[seg].predicted || in[seg + 1].predicted;
+    pt.execution_only = in[seg].execution_only || in[seg + 1].execution_only;
     pt.weight = in[seg].weight + t * (in[seg + 1].weight - in[seg].weight);
     pt.ego_turn_contamination_score =
         in[seg].ego_turn_contamination_score +
@@ -800,7 +883,7 @@ std::vector<LocalPathPoint> transformWorldPathToLocal(const std::vector<HistoryP
   out.reserve(world_pts.size());
   for (size_t i = 0; i < world_pts.size(); ++i) {
     LocalPathPoint pt;
-    transformWorldToLocal(ego, world_pts[i].x, world_pts[i].y, &pt.x, &pt.y);
+    worldToBodyCenter(ego, world_pts[i].x, world_pts[i].y, &pt.x, &pt.y);
     pt.yaw = wrapAngle(world_pts[i].heading - ego.yaw);
     out.push_back(pt);
   }
@@ -824,6 +907,12 @@ std::vector<RawTrailPoint> makeRawTrailPoints(const std::vector<HistoryPoint2D>&
     pt.yaw = world_pts[i].heading;
     pt.kappa = world_pts[i].curvature;
     pt.stamp = world_pts[i].stamp;
+    pt.predicted = world_pts[i].predicted;
+    pt.execution_only = world_pts[i].execution_only;
+    pt.observation_support_start = world_pts[i].observation_support_start;
+    pt.source_id=world_pts[i].source_id;pt.source_end_id=world_pts[i].source_end_id;
+    pt.source_fraction=world_pts[i].source_fraction;pt.segment_id=world_pts[i].segment_id;
+    pt.history_s=world_pts[i].history_s;
     out.push_back(pt);
   }
   return out;
@@ -863,7 +952,7 @@ std::vector<RefPoint> makeRefPointsFromRawTrail(const std::vector<RawTrailPoint>
     RefPoint pt;
     pt.s = raw_trail[i].s;
     pt.t = raw_trail[i].t;
-    transformWorldToLocal(ego, raw_trail[i].x, raw_trail[i].y, &pt.x, &pt.y);
+    worldToBodyCenter(ego, raw_trail[i].x, raw_trail[i].y, &pt.x, &pt.y);
     pt.yaw = wrapAngle(raw_trail[i].yaw - ego.yaw);
     pt.kappa = raw_trail[i].kappa;
     pt.v_ref = clampValue(nominal_speed * std::max(0.4, 1.0 - 1.5 * std::fabs(pt.kappa)), 0.0, nominal_speed);
@@ -898,6 +987,7 @@ void recomputeRefGeometry(std::vector<RefPoint>* pts) {
     (*pts)[0].kappa = 0.0;
     return;
   }
+  if (std::all_of(pts->begin(),pts->end(),[](const RefPoint& p){return p.analytic_geometry;})) return;
 
   for (size_t i = 0; i < pts->size(); ++i) {
     const size_t i0 = (i == 0) ? i : i - 1;
@@ -917,7 +1007,7 @@ void recomputeRefGeometry(std::vector<RefPoint>* pts) {
   for (size_t i = 1; i + 1 < pts->size(); ++i) {
     const double ds = std::max(1e-3, (*pts)[i + 1].s - (*pts)[i - 1].s);
     const double dpsi = wrapAngle((*pts)[i + 1].yaw - (*pts)[i - 1].yaw);
-    (*pts)[i].kappa = clampValue(dpsi / ds, -0.8, 0.8);
+    (*pts)[i].kappa = dpsi / ds;
   }
   if (pts->size() >= 2) {
     (*pts).front().kappa = (*pts)[std::min<size_t>(1, pts->size() - 1)].kappa;
@@ -1175,8 +1265,8 @@ class EgoMotionEstimator {
 
     if (!initialized_) {
       pose_.stamp = stamp;
-      pose_.x = x;
-      pose_.y = y;
+      pose_.x = x - 0.30*std::cos(yaw);
+      pose_.y = y - 0.30*std::sin(yaw);
       pose_.yaw = wrapAngle(yaw);
       pose_.v = fused_speed_mps_;
       pose_.delta = filtered_steer_angle_rad_;
@@ -1196,6 +1286,8 @@ class EgoMotionEstimator {
       return;
     }
 
+    x -= 0.30*std::cos(yaw);
+    y -= 0.30*std::sin(yaw);
     const double pos_err = pointDistance(pose_.x, pose_.y, x, y);
     const double yaw_err = wrapAngle(yaw - pose_.yaw);
     const bool reset =
@@ -1291,10 +1383,12 @@ class EgoMotionEstimator {
       return false;
     }
     if (stamp <= buffer_.front().stamp) {
+      if ((buffer_.front().stamp-stamp).toSec() > 0.05) return false;
       *pose = buffer_.front();
       return true;
     }
     if (stamp >= buffer_.back().stamp) {
+      if ((stamp-buffer_.back().stamp).toSec() > 0.05) return false;
       *pose = buffer_.back();
       return true;
     }
@@ -1467,6 +1561,7 @@ class LeadObservationProjector {
       return false;
     }
 
+    if(debug)debug->origin_query_dt=(ego_at_obs->stamp-stamp).toSec();
     std::vector<LeadObservation> candidates;
     candidates.reserve(msg.poses.size());
     for (size_t i = 0; i < msg.poses.size(); ++i) {
@@ -1562,7 +1657,7 @@ class LeadObservationProjector {
     out.local_y = center_y;
     out.local_heading = local_heading;
     out.range = hypot2(center_x, center_y);
-    transformLocalToWorld(ego_at_obs, center_x, center_y, &out.world_x, &out.world_y);
+    transformLocalToWorld(ego_at_obs, center_x + 0.60, center_y, &out.world_x, &out.world_y);
     out.world_heading = world_heading;
     return out;
   }
@@ -1752,6 +1847,7 @@ class LeadTrailTracker {
       return;
     }
 
+    last_innovation_observation_stamp_=obs.stamp;
     const double sigma =
         cfg_.innovation_base_gate + cfg_.innovation_range_gain * obs.range +
         cfg_.innovation_turn_gain * std::fabs(ego_yaw_rate) * obs.range;
@@ -1763,13 +1859,15 @@ class LeadTrailTracker {
       last_innovation_norm_ = residual;
       last_innovation_metric_ = metric;
       if (metric > cfg_.outlier_reject_scale && (obs.stamp - track_.stamp).toSec() <= cfg_.lost_timeout) {
-        if (debug != NULL) {
-          debug->history_reason = "outlier_rejected";
-          debug->history_size = exportHistoryUnlocked().size();
-          debug->outlier_gate_reason = "innovation_metric";
+        if(!reestimateFromCoherentObservations(obs)) {
+          if (debug != NULL) {
+            debug->history_reason = "outlier_rejected";
+            debug->history_size = exportHistoryUnlocked().size();
+            debug->outlier_gate_reason = "innovation_metric";
+          }
+          last_outlier_gate_reason_ = "innovation_metric";
+          return;
         }
-        last_outlier_gate_reason_ = "innovation_metric";
-        return;
       }
       last_outlier_gate_reason_ = "none";
     } else {
@@ -1777,6 +1875,7 @@ class LeadTrailTracker {
       last_innovation_metric_ = 0.0;
       last_outlier_gate_reason_ = "none";
     }
+    rejected_observations_.clear();
 
     LeadNode node;
     node.stamp = obs.stamp;
@@ -1995,6 +2094,8 @@ class LeadTrailTracker {
       static_anchor_x_ = obs.world_x;
       static_anchor_y_ = obs.world_y;
     }
+    node.observation_support_start = nodes_.empty() ? obs.stamp :
+        nodes_.back().observation_support_start;
 
     updateMeasurementHypothesisUnlocked(&node);
 
@@ -2007,6 +2108,28 @@ class LeadTrailTracker {
 
   void pruneHistory(const ros::Time& now) {
     pruneWindowUnlocked(now);
+  }
+
+  void updateFollowerProgress(const EgoPose2D& ego) {
+    if (confirmed_trail_world_.size() < 2) return;
+    const double x=ego.x+0.30*std::cos(ego.yaw), y=ego.y+0.30*std::sin(ego.yaw);
+    double best=std::numeric_limits<double>::infinity(), progress=follower_s_;
+    for (size_t i=1;i<confirmed_trail_world_.size();++i) {
+      const auto& a=confirmed_trail_world_[i-1]; const auto& b=confirmed_trail_world_[i];
+      if (!supportedHistoryEdge(a,b)) continue;
+      const double dx=b.x-a.x,dy=b.y-a.y,den=dx*dx+dy*dy;
+      if (den<1e-8) continue;
+      const double u=clampValue(((x-a.x)*dx+(y-a.y)*dy)/den,0.,1.);
+      const double s=a.history_s+u*(b.history_s-a.history_s);
+      const double distance=pointDistance(x,y,a.x+u*dx,a.y+u*dy);
+      const double cost=distance+0.1*std::fabs(s-follower_s_);
+      if (distance<0.60 && cost<best) { best=cost; progress=s; }
+    }
+    const double dt=follower_stamp_.isZero()?0.:(ego.stamp-follower_stamp_).toSec();
+    const double step=std::max(0.,std::fabs(ego.v)*std::max(0.,dt)*1.5)+0.03;
+    follower_s_=std::max(follower_s_,std::min(progress,follower_s_+step));
+    follower_stamp_=ego.stamp;
+    pruneTrailContainerUnlocked(&confirmed_trail_world_,ego.stamp);
   }
 
   std::vector<HistoryPoint2D> worldHistoryForPublish(const ros::Time& stamp) const {
@@ -2025,8 +2148,66 @@ class LeadTrailTracker {
   bool movingFlag() const { return moving_flag_; }
   double innovationNorm() const { return last_innovation_norm_; }
   double innovationMetric() const { return last_innovation_metric_; }
+  ros::Time innovationObservationStamp() const { return last_innovation_observation_stamp_; }
+  size_t pendingInnovationCount() const { return rejected_observations_.size(); }
+  uint64_t innovationReestimates() const { return innovation_reestimates_; }
+  ros::Time lastInnovationReestimate() const { return innovation_reestimate_stamp_; }
 
  private:
+  bool reestimateFromCoherentObservations(const LeadObservation& obs) {
+    if(nodes_.empty() || !nodes_.back().has_measurement)return false;
+    if(!rejected_observations_.empty() && (obs.stamp<=rejected_observations_.back().stamp ||
+        (obs.stamp-rejected_observations_.back().stamp).toSec()>0.20))rejected_observations_.clear();
+    rejected_observations_.push_back(obs);
+    while(rejected_observations_.size()>12 || (obs.stamp-rejected_observations_.front().stamp).toSec()>0.40)
+      rejected_observations_.pop_front();
+    const auto& samples=rejected_observations_;
+    if(samples.size()<6 || (obs.stamp-samples.front().stamp).toSec()<0.20)return false;
+    const LeadNode previous=nodes_.back();
+    double anchor_x,anchor_y;
+    transformLocalToWorld(previous.ego,previous.z_rel_x+0.60,previous.z_rel_y,&anchor_x,&anchor_y);
+    const double dt=(obs.stamp-previous.stamp).toSec();
+    const double noise=std::max(0.01,std::min(cfg_.measurement_along_sigma,cfg_.measurement_cross_sigma));
+    if(dt<=0. || dt>cfg_.lost_timeout || pointDistance(obs.world_x,obs.world_y,anchor_x,anchor_y)>
+        cfg_.lead_tail_max_speed*dt+2.*noise)return false;
+    double mean_t=0.,mean_x=0.,mean_y=0.;
+    for(const auto& sample:samples) {
+      mean_t+=(sample.stamp-previous.stamp).toSec();
+      mean_x+=sample.world_x;mean_y+=sample.world_y;
+    }
+    mean_t/=samples.size();mean_x/=samples.size();mean_y/=samples.size();
+    double variance=0.,vx=0.,vy=0.;
+    for(const auto& sample:samples) {
+      const double t=(sample.stamp-previous.stamp).toSec()-mean_t;
+      variance+=t*t;vx+=t*(sample.world_x-mean_x);vy+=t*(sample.world_y-mean_y);
+    }
+    if(variance<1e-8)return false;
+    vx/=variance;vy/=variance;
+    const double speed=hypot2(vx,vy);
+    if(speed>cfg_.lead_tail_max_speed || pointDistance(mean_x-vx*mean_t,mean_y-vy*mean_t,anchor_x,anchor_y)>2.*noise)
+      return false;
+    double residual2=0.,largest=0.;
+    for(const auto& sample:samples) {
+      const double t=(sample.stamp-previous.stamp).toSec()-mean_t;
+      const double error=pointDistance(sample.world_x,sample.world_y,mean_x+vx*t,mean_y+vy*t);
+      residual2+=error*error;largest=std::max(largest,error);
+    }
+    if(std::sqrt(residual2/samples.size())>noise || largest>2.*noise)return false;
+    // Restart only the revisable estimator window from its last raw accepted
+    // measurement. Confirmed history and observation provenance are unchanged.
+    LeadNode anchor=previous;anchor.x=anchor_x;anchor.y=anchor_y;
+    anchor.v=speed;anchor.a=0.;anchor.kappa=anchor.dkappa=0.;
+    if(speed>cfg_.lead_static_speed_gate)anchor.yaw=std::atan2(vy,vx);
+    nodes_.clear();nodes_.push_back(anchor);tail_buffer_world_.clear();motion_tail_buffer_world_.clear();
+    resetUnconfirmedAccumulatorUnlocked();lateral_residual_filter_initialized_=false;
+    lateral_residual_filter_stamp_=ros::Time();lateral_residual_filtered_=lateral_velocity_filtered_=0.;
+    track_.x=anchor.x;track_.y=anchor.y;track_.vx=vx;track_.vy=vy;track_.heading=anchor.yaw;
+    static_anchor_x_=anchor.x;static_anchor_y_=anchor.y;static_anchor_heading_=anchor.yaw;
+    static_anchor_stamp_=anchor.stamp;
+    has_static_anchor_=false;innovation_reestimate_stamp_=obs.stamp;++innovation_reestimates_;
+    return true;
+  }
+
   double estimateWindowProgressUnlocked() const {
     if (nodes_.size() < 2) {
       return 0.0;
@@ -2253,6 +2434,7 @@ class LeadTrailTracker {
     double expected_local_x = 0.0;
     double expected_local_y = 0.0;
     transformWorldToLocal(ego, world_x, world_y, &expected_local_x, &expected_local_y);
+    expected_local_x -= 0.60;
     return pointDistance(meas_x, meas_y, expected_local_x, expected_local_y);
   }
 
@@ -2498,6 +2680,7 @@ class LeadTrailTracker {
     lateral_residual_filtered_ = 0.0;
     lateral_velocity_filtered_ = 0.0;
     lateral_residual_filter_stamp_ = ros::Time();
+    rejected_observations_.clear();
   }
 
   CenterlineProjection projectToSmoothedCenterlineUnlocked(double x, double y) const {
@@ -2566,6 +2749,7 @@ class LeadTrailTracker {
         double pred_local_y = 0.0;
         transformWorldToLocal(nodes_[i].ego, nodes_[i].x, nodes_[i].y,
                               &pred_local_x, &pred_local_y);
+        pred_local_x -= 0.60;
         const double rx = nodes_[i].z_rel_x - pred_local_x;
         const double ry = nodes_[i].z_rel_y - pred_local_y;
         const double metric =
@@ -2638,15 +2822,20 @@ class LeadTrailTracker {
       return;
     }
     const double heading_ds = std::max(0.02, cfg_.heading_recompute_min_distance);
+    const double derivative_span = std::max(cfg_.tail_confirm_min_time,cfg_.tail_confirm_min_age);
+    std::vector<double> speeds(nodes_.size(),0.0);
+    std::vector<size_t> window_begin(nodes_.size()),window_end(nodes_.size());
     for (size_t i = 0; i < nodes_.size(); ++i) {
       size_t i0 = i;
       size_t i1 = i;
       while (i0 > 0 &&
-             pointDistance(nodes_[i0].x, nodes_[i0].y, nodes_[i].x, nodes_[i].y) < heading_ds) {
+             (pointDistance(nodes_[i0].x,nodes_[i0].y,nodes_[i].x,nodes_[i].y)<heading_ds ||
+              (nodes_[i].stamp-nodes_[i0].stamp).toSec()<derivative_span)) {
         --i0;
       }
       while (i1 + 1 < nodes_.size() &&
-             pointDistance(nodes_[i1].x, nodes_[i1].y, nodes_[i].x, nodes_[i].y) < heading_ds) {
+             (pointDistance(nodes_[i1].x,nodes_[i1].y,nodes_[i].x,nodes_[i].y)<heading_ds ||
+              (nodes_[i1].stamp-nodes_[i].stamp).toSec()<derivative_span)) {
         ++i1;
       }
       if (i0 == i && i > 0) {
@@ -2663,11 +2852,37 @@ class LeadTrailTracker {
         nodes_[i].yaw =
             wrapAngle(nodes_[i].yaw + 0.65 * wrapAngle(geom_yaw - nodes_[i].yaw));
       }
-      const double dt =
-          std::max(1e-3, (nodes_[i1].stamp - nodes_[i0].stamp).toSec());
-      const double v_new = ds / dt;
-      nodes_[i].a = (v_new - nodes_[i].v) / dt;
-      nodes_[i].v = v_new;
+      window_begin[i]=i0;window_end[i]=i1;
+      // Fit velocity in physical time. A burst of callbacks a few ms apart
+      // must not turn a position correction into a large measured velocity.
+      double weight=0.,mt=0.,mx=0.,my=0.;
+      for(size_t j=i0;j<=i1;++j) {
+        const double w=std::max(1e-3,nodes_[j].robust_weight);
+        const double t=(nodes_[j].stamp-nodes_[i].stamp).toSec();
+        double x=nodes_[j].x,y=nodes_[j].y;
+        if(nodes_[j].has_measurement)transformLocalToWorld(nodes_[j].ego,
+            nodes_[j].z_rel_x+0.60,nodes_[j].z_rel_y,&x,&y);
+        weight+=w;mt+=w*t;mx+=w*x;my+=w*y;
+      }
+      mt/=weight;mx/=weight;my/=weight;
+      double variance=0.,vx=0.,vy=0.;
+      for(size_t j=i0;j<=i1;++j) {
+        const double w=std::max(1e-3,nodes_[j].robust_weight);
+        const double t=(nodes_[j].stamp-nodes_[i].stamp).toSec()-mt;
+        double x=nodes_[j].x,y=nodes_[j].y;
+        if(nodes_[j].has_measurement)transformLocalToWorld(nodes_[j].ego,
+            nodes_[j].z_rel_x+0.60,nodes_[j].z_rel_y,&x,&y);
+        variance+=w*t*t;vx+=w*t*(x-mx);vy+=w*t*(y-my);
+      }
+      if(variance>1e-9)speeds[i]=hypot2(vx,vy)/variance;
+    }
+    for(size_t i=0;i<nodes_.size();++i) {
+      const size_t left=window_begin[i],right=window_end[i];
+      const double dt=(nodes_[right].stamp-nodes_[left].stamp).toSec();
+      // Acceleration is a temporal derivative, not a difference between two
+      // optimizer iterations of the same timestamped node.
+      nodes_[i].a=dt>1e-6?(speeds[right]-speeds[left])/dt:0.;
+      nodes_[i].v=speeds[i];
     }
     if (nodes_.size() >= 2) {
       nodes_.front().yaw = nodes_[std::min<size_t>(1, nodes_.size() - 1)].yaw;
@@ -2842,6 +3057,8 @@ class LeadTrailTracker {
   HistoryPoint2D nodeToHistoryPointUnlocked(const LeadNode& node) const {
     HistoryPoint2D pt;
     pt.stamp = node.stamp;
+    pt.observation_support_start = node.observation_support_start;
+    pt.source_id = pt.source_end_id = node.stamp.toNSec();
     pt.x = node.x;
     pt.y = node.y;
     pt.heading = node.yaw;
@@ -3124,13 +3341,16 @@ class LeadTrailTracker {
     if (trail == NULL) {
       return;
     }
-    if (cfg_.history_max_age > 0.0) {
-      while (!trail->empty() &&
-             (now - trail->front().stamp).toSec() > cfg_.history_max_age) {
-        trail->pop_front();
-      }
+    (void)now;
+    double prune_s=follower_s_-0.30;
+    // An unresolved segment boundary still needs its upstream fitting context.
+    // Release it by vehicle progress, not by elapsed time or a newer tail.
+    for(size_t i=1;i<trail->size();++i) {
+      const auto& a=(*trail)[i-1];const auto& b=(*trail)[i];
+      if(a.segment_id && b.segment_id!=a.segment_id && follower_s_<=b.history_s+0.30)
+        prune_s=std::min(prune_s,a.history_s-1.50);
     }
-    while (trail->size() > static_cast<size_t>(std::max(2, cfg_.history_max_points))) {
+    while (trail->size()>3 && (*trail)[1].history_s < prune_s) {
       trail->pop_front();
     }
   }
@@ -3267,6 +3487,8 @@ class LeadTrailTracker {
 
     if (confirmed_trail_world_.empty()) {
       candidate.predicted = false;
+      candidate.source_id = candidate.source_end_id = candidate.stamp.toNSec();
+      candidate.segment_id = 1;
       confirmed_trail_world_.push_back(candidate);
       last_confirmed_append_stamp_ = candidate.stamp;
       if (last_history_action_ != "history_dynamic_accum_override") {
@@ -3293,7 +3515,14 @@ class LeadTrailTracker {
         (confirm_speed > cfg_.lead_static_speed_gate && dist >= 0.06);
 
     if (append) {
+      if (confirmed_trail_world_.size() >= static_cast<size_t>(std::max(2,cfg_.history_max_points))) {
+        last_history_action_="history_capacity_unpassed";
+        return;
+      }
       candidate.predicted = false;
+      candidate.source_id = candidate.source_end_id = candidate.stamp.toNSec();
+      candidate.history_s = last_confirmed.history_s + dist;
+      candidate.segment_id = last_confirmed.segment_id + (supportedHistoryEdge(last_confirmed,candidate) ? 0 : 1);
       confirmed_trail_world_.push_back(candidate);
       last_confirmed_append_stamp_ = candidate.stamp;
       if (history_window_commit) {
@@ -3325,7 +3554,7 @@ class LeadTrailTracker {
       history.push_back(pt);
     }
 
-    if (has_static_anchor_) {
+    if (has_static_anchor_ && history.empty()) {
       HistoryPoint2D anchor;
       anchor.stamp = static_anchor_stamp_.isValid()
                          ? static_anchor_stamp_
@@ -3335,24 +3564,9 @@ class LeadTrailTracker {
       anchor.heading = static_anchor_heading_;
       anchor.speed = 0.0;
       anchor.curvature = 0.0;
-      anchor.predicted = false;
+      anchor.predicted = true;
 
-      if (history.empty()) {
-        history.push_back(anchor);
-      } else {
-        const double d = pointDistance(history.back().x, history.back().y, anchor.x, anchor.y);
-        if (d > cfg_.static_anchor_append_distance_gate &&
-            (!history.back().stamp.isValid() || !anchor.stamp.isValid() ||
-             anchor.stamp > history.back().stamp)) {
-          history.push_back(anchor);
-        } else {
-          history.back().x = anchor.x;
-          history.back().y = anchor.y;
-          history.back().heading = anchor.heading;
-          history.back().speed = 0.0;
-          history.back().predicted = false;
-        }
-      }
+      history.push_back(anchor);
     }
 
     std::vector<HistoryPoint2D> out =
@@ -3694,6 +3908,21 @@ class LeadTrailTracker {
   std::vector<HistoryPoint2D> smoothReferenceSuffixUnlocked(
       const std::vector<HistoryPoint2D>& input,
       TrackerDebugState* debug) const {
+    // Smooth only the revisable suffix, anchored at the last confirmed point.
+    size_t confirmed=0;
+    while(confirmed<input.size() && !input[confirmed].predicted)++confirmed;
+    if(confirmed>0) {
+      if(confirmed==input.size()) {
+        fillTailWeightDebug(input,debug);fillSuffixShapeMetrics(input,input,debug);
+        return input;
+      }
+      std::vector<HistoryPoint2D> tail(input.begin()+confirmed-1,input.end());
+      for(auto& p:tail)p.predicted=true;
+      tail=smoothReferenceSuffixUnlocked(tail,debug);
+      std::vector<HistoryPoint2D> out(input.begin(),input.begin()+confirmed);
+      if(tail.size()>1)out.insert(out.end(),tail.begin()+1,tail.end());
+      return out;
+    }
     if (input.size() < 4 || worldHistorySpan(input) < 0.25) {
       fillTailWeightDebug(input, debug);
       fillSuffixShapeMetrics(input, input, debug);
@@ -4156,6 +4385,7 @@ class LeadTrailTracker {
          last_history_action_ == "history_progress_too_small" ||
          last_history_action_.find("reverse") != std::string::npos ||
          last_history_action_.find("kink") != std::string::npos);
+    if (confirmed_trail_world_.empty() && !direct_motion_tail.empty()) history.clear();
     const bool prefer_direct_motion_tail =
         !direct_motion_tail.empty() && history.empty();
     if (prefer_direct_motion_tail) {
@@ -4187,7 +4417,6 @@ class LeadTrailTracker {
 
     if (!direct_motion_tail.empty() && !history.empty()) {
       std::vector<HistoryPoint2D> combined = history;
-      const ros::Time last_confirmed_stamp = combined.back().stamp;
       bool appended = false;
       for (size_t i = 0; i < direct_motion_tail.size(); ++i) {
         HistoryPoint2D pt = direct_motion_tail[i];
@@ -4195,9 +4424,8 @@ class LeadTrailTracker {
             combined.empty()
                 ? std::numeric_limits<double>::infinity()
                 : pointDistance(combined.back().x, combined.back().y, pt.x, pt.y);
-        if (last_confirmed_stamp.isValid() && pt.stamp.isValid() &&
-            pt.stamp <= last_confirmed_stamp &&
-            spatial_gap < std::max(0.02, cfg_.fixed_frame_duplicate_distance)) {
+        if (combined.back().stamp.isValid() && pt.stamp.isValid() &&
+            pt.stamp <= combined.back().stamp) {
           continue;
         }
         if (!combined.empty() &&
@@ -4205,6 +4433,12 @@ class LeadTrailTracker {
           continue;
         }
         pt.predicted = true;
+        if (!supportedHistoryEdge(combined.back(),pt)) {
+          if (debug) debug->provisional_tail_block_detail="history_tail_gap";
+          break;
+        }
+        pt.segment_id=combined.back().segment_id;
+        pt.history_s=combined.back().history_s+spatial_gap;
         combined.push_back(pt);
         appended = true;
       }
@@ -4279,8 +4513,7 @@ class LeadTrailTracker {
     const bool prefer_motion_tail_standalone =
         debug != NULL &&
         debug->motion_tail_used_as_reference &&
-        confirmed_trail_world_.size() <
-            static_cast<size_t>(std::max(1, cfg_.provisional_tail_standalone_until_confirmed_points));
+        confirmed_trail_world_.empty();
     if (prefer_motion_tail_standalone) {
       std::vector<HistoryPoint2D> standalone = tail;
       standalone = removeNearDuplicatePoints(standalone, std::max(0.01, cfg_.fixed_frame_duplicate_distance));
@@ -4311,9 +4544,14 @@ class LeadTrailTracker {
           continue;
         }
         if (pointDistance(last.x, last.y, pt.x, pt.y) < cfg_.fixed_frame_duplicate_distance) {
-          history.back() = pt;
           continue;
         }
+        if (!supportedHistoryEdge(last,pt)) {
+          if (debug) debug->provisional_tail_block_detail="history_tail_gap";
+          break;
+        }
+        pt.segment_id=last.segment_id;
+        pt.history_s=last.history_s+pointDistance(last.x,last.y,pt.x,pt.y);
       }
       history.push_back(pt);
     }
@@ -4390,7 +4628,6 @@ class LeadTrailTracker {
         vote_speed < cfg_.static_anchor_speed_gate &&
         last_innovation_norm_ < cfg_.static_residual_gate;
     const bool motion_suggests_dynamic =
-        moving_flag_ ||
         conditioned_dynamic ||
         vote_speed > cfg_.motion_static_suppress_speed ||
         fixed_frame_progress > cfg_.motion_static_suppress_progress ||
@@ -4536,6 +4773,8 @@ class LeadTrailTracker {
   LeadState2D track_;
   std::deque<LeadNode> nodes_;
   std::deque<HistoryPoint2D> confirmed_trail_world_;
+  double follower_s_ = 0.0;
+  ros::Time follower_stamp_;
   std::deque<HistoryPoint2D> tail_buffer_world_;
   std::deque<HistoryPoint2D> motion_tail_buffer_world_;
   ros::Time last_confirmed_append_stamp_;
@@ -4552,6 +4791,10 @@ class LeadTrailTracker {
   std::string last_outlier_gate_reason_ = "none";
   double last_innovation_norm_ = 0.0;
   double last_innovation_metric_ = 0.0;
+  ros::Time last_innovation_observation_stamp_;
+  std::deque<LeadObservation> rejected_observations_;
+  uint64_t innovation_reestimates_=0;
+  ros::Time innovation_reestimate_stamp_;
   bool unconfirmed_accum_initialized_ = false;
   double unconfirmed_progress_accum_ = 0.0;
   double unconfirmed_time_accum_ = 0.0;
@@ -4586,6 +4829,10 @@ class PathGenerator {
     double raw_max_heading_step = 0.70;
     double raw_max_yaw_jump = 1.00;
     double raw_max_segment_kappa = 5.00;
+    double reference_measurement_sigma = 0.12;
+    double recovery_lost_timeout = 0.60;
+    double recovery_max_distance = 1.20;
+    double recovery_max_speed = 0.60;
     double raw_backtrack_epsilon = 0.02;
     double raw_stable_segment_min_span = 0.60;
     int raw_stable_segment_min_points = 5;
@@ -4680,8 +4927,15 @@ class PathGenerator {
 
   explicit PathGenerator(const Config& cfg) : cfg_(cfg) {}
 
+  struct GeometrySplit {
+    std::vector<HistoryPoint2D> before,after;
+    std::string reason="none";
+  };
+
   std::vector<RawTrailPoint> buildRawTrail(const std::vector<HistoryPoint2D>& world_history,
-                                           TrackerDebugState* debug) const {
+                                           TrackerDebugState* debug,
+                                           const EgoPose2D* ego = NULL) const {
+    if(ego) {recovery_observed_world_=world_history;geometry_split_=GeometrySplit();}
     if (world_history.empty()) {
       if (debug != NULL) {
         debug->raw_reason = "history_empty";
@@ -4691,7 +4945,8 @@ class PathGenerator {
     }
 
     std::vector<HistoryPoint2D> world_pts =
-        removeNearDuplicatePoints(world_history, std::max(0.005, cfg_.raw_duplicate_min_distance));
+        removeNearDuplicatePoints(world_history, std::max(0.005, cfg_.raw_duplicate_min_distance),true);
+    world_pts = selectStableWorldSegment(world_pts, debug, ego);
     if (world_pts.size() >= 2) {
       recomputeHeadingStable(world_pts,
                              cfg_.raw_heading_min_distance,
@@ -4707,7 +4962,6 @@ class PathGenerator {
                              cfg_.raw_heading_min_distance,
                              cfg_.raw_heading_hold_distance,
                              cfg_.raw_max_heading_step);
-      world_pts = selectStableWorldSegment(world_pts, debug);
       if (world_pts.size() >= 2) {
         recomputeHeadingStable(world_pts,
                                cfg_.raw_heading_min_distance,
@@ -4722,7 +4976,8 @@ class PathGenerator {
       debug->raw_span = raw_trail.empty() ? 0.0 : raw_trail.back().s;
       debug->raw_reason =
           raw_trail.empty()
-              ? (world_history.empty() ? "history_empty" : "raw_no_stable_segment")
+              ? (prior_raw_reason == "raw_history_exhausted" ? prior_raw_reason :
+                 (world_history.empty() ? "history_empty" : "raw_no_stable_segment"))
               : (prior_raw_reason == "raw_relaxed_stable_segment"
                      ? "raw_relaxed_stable_segment"
                      : "raw_ready");
@@ -4731,7 +4986,13 @@ class PathGenerator {
   }
 
   std::vector<HistoryPoint2D> selectStableWorldSegment(const std::vector<HistoryPoint2D>& pts,
-                                                       TrackerDebugState* debug) const {
+                                                       TrackerDebugState* debug,
+                                                       const EgoPose2D* ego = NULL) const {
+    geometry_split_=GeometrySplit();
+    if(debug) {
+      debug->geometry_split_reason="none";
+      debug->geometry_split_before=debug->geometry_split_after=0.;
+    }
     if (static_cast<int>(pts.size()) < std::max(2, cfg_.raw_stable_segment_min_points)) {
       return pts;
     }
@@ -4741,15 +5002,21 @@ class PathGenerator {
       size_t end = 0;
       double span = 0.0;
       double score = -1e9;
+      std::string preceding_split="none";
     };
 
     std::vector<Segment> segments;
     std::vector<Segment> relaxed_segments;
+    std::vector<Segment> all_sections;
     size_t begin = 0;
+    std::string preceding_split="none";
     auto finish_segment = [&](size_t end) {
-      if (end <= begin || end >= pts.size()) {
+      if (end < begin || end >= pts.size()) {
         return;
       }
+      Segment section;section.begin=begin;section.end=end;section.preceding_split=preceding_split;
+      all_sections.push_back(section);
+      if(end==begin)return;
       double span = 0.0;
       double max_yaw_jump = 0.0;
       double max_kappa = 0.0;
@@ -4784,6 +5051,7 @@ class PathGenerator {
       s.begin = begin;
       s.end = end;
       s.span = span;
+      s.preceding_split=preceding_split;
       s.score = span - 0.20 * max_kappa - 0.25 * max_yaw_jump - 2.0 * backtrack_penalty;
       relaxed_segments.push_back(s);
       if (count >= cfg_.raw_stable_segment_min_points &&
@@ -4798,23 +5066,38 @@ class PathGenerator {
       const double dx = b.x - a.x;
       const double dy = b.y - a.y;
       const double ds = hypot2(dx, dy);
+      if(!supportedHistoryEdge(a,b)) {
+        finish_segment(i-1);begin=i;preceding_split="observation_gap";continue;
+      }
       if (ds < 1e-5) {
         continue;
       }
-      const double progress = dx * std::cos(a.heading) + dy * std::sin(a.heading);
-      double dyaw = std::fabs(wrapAngle(b.heading - a.heading));
-      if (i >= 2) {
-        const double prev_yaw = std::atan2(a.y - pts[i - 2].y, a.x - pts[i - 2].x);
-        const double seg_yaw = std::atan2(dy, dx);
-        dyaw = std::max(dyaw, std::fabs(wrapAngle(seg_yaw - prev_yaw)));
-      }
-      const double kappa = dyaw / std::max(1e-4, ds);
+      // Chord angles over one centimetre-scale sample amplify observation
+      // noise. Use supported spatial baselines without moving history points.
+      const double baseline = std::max(cfg_.raw_heading_min_distance,
+                                       2.0 * cfg_.raw_duplicate_min_distance);
+      size_t left = i - 1, right = i;
+      while (left > begin && supportedHistoryEdge(pts[left - 1], pts[left]) &&
+             pointDistance(pts[left].x, pts[left].y, a.x, a.y) < baseline) --left;
+      while (right + 1 < pts.size() && supportedHistoryEdge(pts[right], pts[right + 1]) &&
+             pointDistance(pts[right].x, pts[right].y, a.x, a.y) < baseline) ++right;
+      const double in_x=a.x-pts[left].x, in_y=a.y-pts[left].y;
+      const double out_x=pts[right].x-a.x, out_y=pts[right].y-a.y;
+      const double in_length=hypot2(in_x,in_y), out_length=hypot2(out_x,out_y);
+      const double tangent=in_length>1e-5 ? std::atan2(in_y,in_x) : a.heading;
+      const double progress = dx * std::cos(tangent) + dy * std::sin(tangent);
+      const double dyaw = in_length>1e-5 && out_length>1e-5 ?
+          std::fabs(wrapAngle(std::atan2(out_y,out_x)-tangent)) : 0.0;
+      const double kappa = dyaw / std::max(1e-4,0.5*(in_length+out_length));
+      const bool curvature_supported=in_length>=baseline && out_length>=baseline;
       const bool cut = progress < -cfg_.raw_backtrack_epsilon ||
                        dyaw > cfg_.raw_max_yaw_jump ||
-                       kappa > cfg_.raw_max_segment_kappa;
+                       (curvature_supported && kappa > cfg_.raw_max_segment_kappa);
       if (cut) {
         finish_segment(i - 1);
         begin = i;
+        preceding_split=progress < -cfg_.raw_backtrack_epsilon ? "backtrack" :
+            (dyaw > cfg_.raw_max_yaw_jump ? "heading_jump" : "curvature");
       }
     }
     finish_segment(pts.size() - 1);
@@ -4830,16 +5113,33 @@ class PathGenerator {
       }
       return {};
     }
-    // Prefer the newest causal segment once it has enough measured span. The
-    // former highest-score-only choice could publish an old long segment for
-    // seconds while a live turn grew behind it.
+    // Keep nearby unpassed history. Once a segment is entirely behind the
+    // vehicle it must not win indefinitely over the next supported segment.
     const Segment* best = NULL;
-    for (size_t i = relaxed_segments.size(); i > 0; --i) {
-      const Segment& latest = relaxed_segments[i - 1];
-      if (latest.end + 1 == pts.size() &&
-          latest.span + 1e-6 >= cfg_.stable_segment_min_span) {
-        best = &latest;
-        break;
+    if (ego != NULL) {
+      double cost=std::numeric_limits<double>::infinity();
+      for (const Segment& segment:relaxed_segments) {
+        const auto& end=pts[segment.end];
+        const auto& before_end=pts[segment.end-1];
+        const double end_yaw=std::atan2(end.y-before_end.y,end.x-before_end.x);
+        const double center_x=ego->x+0.30*std::cos(ego->yaw);
+        const double center_y=ego->y+0.30*std::sin(ego->yaw);
+        const double beyond_end=(center_x-end.x)*std::cos(end_yaw)+
+                                (center_y-end.y)*std::sin(end_yaw);
+        if(beyond_end>0.0)continue;
+        double distance=std::numeric_limits<double>::infinity();
+        for (size_t i=segment.begin;i<segment.end;++i) {
+          const auto& a=pts[i];const auto& b=pts[i+1];
+          const double x=ego->x+0.30*std::cos(ego->yaw),y=ego->y+0.30*std::sin(ego->yaw);
+          const double dx=b.x-a.x,dy=b.y-a.y,den=std::max(1e-8,dx*dx+dy*dy);
+          const double t=clampValue(((x-a.x)*dx+(y-a.y)*dy)/den,0.,1.);
+          distance=std::min(distance,pointDistance(x,y,a.x+t*dx,a.y+t*dy));
+        }
+        if (distance<cost) { cost=distance;best=&segment; }
+      }
+      if(best==NULL) {
+        if(debug)debug->raw_reason="raw_history_exhausted";
+        return {};
       }
     }
     if (best == NULL) {
@@ -4852,6 +5152,23 @@ class PathGenerator {
     }
     std::vector<HistoryPoint2D> out(pts.begin() + static_cast<long>(best->begin),
                                     pts.begin() + static_cast<long>(best->end + 1));
+    for(const auto& section:all_sections)if(section.begin==best->end+1) {
+      if(section.preceding_split!="observation_gap") {
+        geometry_split_.before=out;
+        size_t supported_end=section.end;
+        while(supported_end+1<pts.size() && supportedHistoryEdge(pts[supported_end],pts[supported_end+1]))++supported_end;
+        // Several noisy knots can form tiny consecutive geometry sections.
+        // Fit across their observed support, never across an observation gap.
+        geometry_split_.after.assign(pts.begin()+section.begin,pts.begin()+supported_end+1);
+        geometry_split_.reason=section.preceding_split;
+        if(debug) {
+          debug->geometry_split_reason=section.preceding_split;
+          debug->geometry_split_before=pts[best->end].stamp.toSec();
+          debug->geometry_split_after=pts[section.begin].stamp.toSec();
+        }
+      }
+      break;
+    }
     if (debug != NULL) {
       debug->selected_segment_span = std::max(debug->selected_segment_span, best->span);
       debug->selected_segment_score = std::max(debug->selected_segment_score, best->score);
@@ -4872,7 +5189,7 @@ class PathGenerator {
   std::vector<LocalPathPoint> buildRawPath(const std::vector<HistoryPoint2D>& world_history,
                                            const EgoPose2D& ego_now,
                                            TrackerDebugState* debug) const {
-    const std::vector<RawTrailPoint> raw_trail = buildRawTrail(world_history, debug);
+    const std::vector<RawTrailPoint> raw_trail = buildRawTrail(world_history, debug, &ego_now);
     if (raw_trail.empty()) {
       return {};
     }
@@ -4930,339 +5247,978 @@ class PathGenerator {
     return trimmed;
   }
 
-  std::vector<LocalPathPoint> buildReferencePath(const std::vector<RawTrailPoint>& raw_trail,
-                                                 const std::vector<LocalPathPoint>& raw,
-                                                 const EgoPose2D& ego_now,
-                                                 TrackerDebugState* debug) const {
-    current_candidate_source_stamp_ =
-        raw_trail.empty() ? ros::Time() : raw_trail.back().stamp;
-    if (debug != NULL) {
-      debug->stable_segment_count = 0;
-      debug->selected_segment_span = 0.0;
-      debug->selected_segment_score = 0.0;
-      debug->reference_hold_age = -1.0;
-      debug->reference_publish_mode = "empty";
+  struct OriginSpline {
+    std::vector<RefPoint> knots;
+    double fit_adjust=0.;
+    std::vector<Eigen::Matrix<double,2,6> > coefficients;
+
+    static Eigen::Matrix<double,2,6> segment(const RefPoint& a,const RefPoint& b,double length) {
+      Eigen::Matrix<double,2,6> c;
+      const Eigen::Vector2d ta(std::cos(a.yaw),std::sin(a.yaw)),tb(std::cos(b.yaw),std::sin(b.yaw));
+      c.col(0)<<a.x,a.y;c.col(1)=length*ta;
+      c.col(2)=0.5*length*length*a.kappa*Eigen::Vector2d(-ta.y(),ta.x());
+      const Eigen::Vector2d d=Eigen::Vector2d(b.x,b.y)-c.col(0)-c.col(1)-c.col(2);
+      const Eigen::Vector2d v=length*tb-c.col(1)-2*c.col(2);
+      const Eigen::Vector2d acc=length*length*b.kappa*Eigen::Vector2d(-tb.y(),tb.x())-2*c.col(2);
+      c.col(3)=10*d-4*v+0.5*acc;c.col(4)=-15*d+7*v-acc;c.col(5)=6*d-3*v+0.5*acc;
+      return c;
     }
-    if (raw_trail.empty()) {
-      if (debug != NULL) {
-        debug->reference_reason = "raw_empty";
-        debug->reference_span = 0.0;
-        debug->reference_publish_mode = "empty_raw";
+    static RefPoint evaluate(const Eigen::Matrix<double,2,6>& c,double u,double length) {
+      Eigen::Vector2d p=c.col(5),v=5*c.col(5),a=20*c.col(5);
+      for(int i=4;i>=0;--i)p=p*u+c.col(i);
+      for(int i=4;i>=1;--i)v=v*u+i*c.col(i);
+      for(int i=4;i>=2;--i)a=a*u+i*(i-1)*c.col(i);
+      RefPoint out;out.x=p.x();out.y=p.y();out.yaw=std::atan2(v.y(),v.x());
+      out.kappa=(v.x()*a.y()-v.y()*a.x())/std::pow(std::max(1e-12,v.squaredNorm()),1.5);
+      out.s=u*length;out.analytic_geometry=true;return out;
+    }
+    explicit OriginSpline(std::vector<RefPoint> p,bool execution_fit=false,
+                          double fit_length=0.10,double fit_limit=0.015):knots(std::move(p)) {
+      if(knots.size()<2)return;
+      // Fit only the execution support, never the stored history. A bounded
+      // bending-energy fit avoids interpolating centimetre observation noise
+      // as high-frequency steering. The fit commutes with rigid transforms.
+      if(execution_fit && knots.size()>=5) {
+        const int n=static_cast<int>(knots.size());
+        double span=0.;for(int i=1;i<n;++i)span+=pointDistance(
+            knots[i].x,knots[i].y,knots[i-1].x,knots[i-1].y);
+        const double ds=span/(n-1);
+        const double lambda=std::pow(fit_length/std::max(0.02,ds),4);
+        std::vector<double> spacing(n-1);
+        for(int i=0;i+1<n;++i)spacing[i]=std::max(1e-5,pointDistance(
+            knots[i].x,knots[i].y,knots[i+1].x,knots[i+1].y))/std::max(1e-5,ds);
+        Eigen::MatrixXd normal=Eigen::MatrixXd::Zero(n,n);
+        Eigen::MatrixXd rhs(n,2);
+        for(int i=0;i<n;++i) {
+          const double weight=i==0?spacing[0]:(i+1==n?spacing.back():0.5*(spacing[i-1]+spacing[i]));
+          normal(i,i)=weight;rhs(i,0)=weight*knots[i].x;rhs(i,1)=weight*knots[i].y;
+        }
+        // A dense startup prefix and an arc-resampled history do not share
+        // uniform spacing. Penalize spatial bending, not sample-index bends.
+        for(int i=1;i<n-1;++i) {
+          const double a=spacing[i-1],b=spacing[i];
+          const Eigen::Vector3d d(2./(a*(a+b)),-2./(a*b),2./(b*(a+b)));
+          normal.block<3,3>(i-1,i-1)+=lambda*0.5*(a+b)*d*d.transpose();
+        }
+        normal(0,0)+=10000.;normal(n-1,n-1)+=10000.;
+        rhs(0,0)+=10000.*knots.front().x;rhs(0,1)+=10000.*knots.front().y;
+        rhs(n-1,0)+=10000.*knots.back().x;rhs(n-1,1)+=10000.*knots.back().y;
+        const Eigen::MatrixXd fit=normal.ldlt().solve(rhs);
+        if(fit.allFinite())for(int i=0;i<n;++i) {
+          Eigen::Vector2d move=fit.row(i).transpose()-Eigen::Vector2d(knots[i].x,knots[i].y);
+          if(move.norm()>fit_limit)move*=fit_limit/move.norm();
+          fit_adjust=std::max(fit_adjust,move.norm());
+          knots[i].x+=move.x();knots[i].y+=move.y();
+        }
       }
+      for(size_t i=0;i<knots.size();++i) {
+        knots[i].s=i ? knots[i-1].s+pointDistance(knots[i-1].x,knots[i-1].y,knots[i].x,knots[i].y) : 0.;
+        const size_t a=i ? i-1 : 0,b=std::min(i+1,knots.size()-1);
+        knots[i].yaw=std::atan2(knots[b].y-knots[a].y,knots[b].x-knots[a].x);
+      }
+      for(size_t i=1;i+1<knots.size();++i) {
+        const double ax=knots[i].x-knots[i-1].x,ay=knots[i].y-knots[i-1].y;
+        const double bx=knots[i+1].x-knots[i].x,by=knots[i+1].y-knots[i].y;
+        knots[i].kappa=2*(ax*by-ay*bx)/std::max(1e-10,hypot2(ax,ay)*hypot2(bx,by)*hypot2(ax+bx,ay+by));
+      }
+      if(knots.size()>2) {knots.front().kappa=knots[1].kappa;knots.back().kappa=knots[knots.size()-2].kappa;}
+      for(size_t i=1;i<knots.size();++i)coefficients.push_back(segment(knots[i-1],knots[i],std::max(1e-5,knots[i].s-knots[i-1].s)));
+    }
+    void parameterSpeed(double s,double* speed,double* rate) const {
+      s=clampValue(s,0.,knots.back().s);
+      size_t i=std::upper_bound(knots.begin(),knots.end(),s,
+          [](double x,const RefPoint& p){return x<p.s;})-knots.begin();
+      i=std::max<size_t>(1,std::min(i,knots.size()-1));
+      const double length=std::max(1e-5,knots[i].s-knots[i-1].s);
+      const double u=(s-knots[i-1].s)/length;
+      const auto& c=coefficients[i-1];
+      Eigen::Vector2d v=5*c.col(5),a=20*c.col(5);
+      for(int j=4;j>=1;--j)v=v*u+j*c.col(j);
+      for(int j=4;j>=2;--j)a=a*u+j*(j-1)*c.col(j);
+      v/=length;a/=(length*length);
+      *speed=v.norm();*rate=v.dot(a)/std::max(1e-6,*speed);
+    }
+
+    struct Frame {
+      RefPoint h;
+      double speed=0.,speed_rate=0.,kappa_rate=0.,arc=0.;
+    };
+
+    Frame frameAt(double s) const {
+      Frame f;f.h=at(s);f.arc=s;
+      s=clampValue(s,0.,knots.back().s);
+      size_t i=std::upper_bound(knots.begin(),knots.end(),s,
+          [](double x,const RefPoint& p){return x<p.s;})-knots.begin();
+      i=std::max<size_t>(1,std::min(i,knots.size()-1));
+      const double length=std::max(1e-5,knots[i].s-knots[i-1].s);
+      const double u=(s-knots[i-1].s)/length;
+      const auto& c=coefficients[i-1];
+      Eigen::Vector2d v=5*c.col(5),a=20*c.col(5),j=60*c.col(5);
+      for(int k=4;k>=1;--k)v=v*u+k*c.col(k);
+      for(int k=4;k>=2;--k)a=a*u+k*(k-1)*c.col(k);
+      for(int k=4;k>=3;--k)j=j*u+k*(k-1)*(k-2)*c.col(k);
+      v/=length;a/=(length*length);j/=(length*length*length);
+      f.speed=std::max(1e-8,v.norm());f.speed_rate=v.dot(a)/f.speed;
+      const double cross=v.x()*a.y()-v.y()*a.x();
+      f.kappa_rate=(v.x()*j.y()-v.y()*j.x())/std::pow(f.speed,3)-
+          3.*cross*v.dot(a)/std::pow(f.speed,5);
+      return f;
+    }
+
+    RefPoint at(double s) const {
+      if(knots.size()<2)return RefPoint();
+      s=clampValue(s,0.,knots.back().s);
+      size_t i=std::upper_bound(knots.begin(),knots.end(),s,[](double x,const RefPoint& p){return x<p.s;})-knots.begin();
+      i=std::max<size_t>(1,std::min(i,knots.size()-1));const double length=knots[i].s-knots[i-1].s;
+      RefPoint p=evaluate(coefficients[i-1],(s-knots[i-1].s)/std::max(1e-5,length),length);p.s=s;return p;
+    }
+
+    double projectOrigin() const {
+      if(knots.size()<2)return 0.;
+      auto distance=[&](double s){const auto p=at(s);return p.x*p.x+p.y*p.y;};
+      double best=0.,value=distance(0.),radius=(knots[1].s-knots[0].s)/8.;
+      for(size_t i=1;i<knots.size();++i) {
+        const double length=knots[i].s-knots[i-1].s;
+        for(int j=0;j<=8;++j) {
+          const double s=knots[i-1].s+length*j/8.;const double d=distance(s);
+          if(d<value){value=d;best=s;radius=length/8.;}
+        }
+      }
+      for(size_t i=0;i<knots.size();++i)if(std::fabs(best-knots[i].s)<1e-9) {
+        if(i)radius=std::max(radius,(knots[i].s-knots[i-1].s)/8.);
+        if(i+1<knots.size())radius=std::max(radius,(knots[i+1].s-knots[i].s)/8.);
+      }
+      // Bounded minimization avoids Newton oscillation on noisy spline knots.
+      double left=std::max(0.,best-radius),right=std::min(knots.back().s,best+radius);
+      const double ratio=0.6180339887498949;
+      double a=right-ratio*(right-left),b=left+ratio*(right-left);
+      double fa=distance(a),fb=distance(b);
+      for(int i=0;i<48 && right-left>1e-10;++i) {
+        if(fa<fb){right=b;b=a;fb=fa;a=right-ratio*(right-left);fa=distance(a);}
+        else {left=a;a=b;fa=fb;b=left+ratio*(right-left);fb=distance(b);}
+      }
+      const double refined=0.5*(left+right);
+      return distance(refined)<value?refined:best;
+    }
+  };
+
+  struct RecoveryPlan {
+    uint64_t from=0,to=0;
+    ros::Time join_stamp;
+    std::vector<HistoryPoint2D> prefix,bridge;
+    double gap=0.,dt=0.,error=0.,cost=0.;
+    bool geometry=false;
+    std::string split_reason="none";
+    double split_before=0.,split_after=0.;
+    bool refined=false;
+  };
+
+  struct RecoveryFitCache {
+    uint64_t from=0,to=0;
+    ros::Time left_stamp,right_stamp;
+    bool geometry=false,complete=false;
+    size_t cursor=0;
+    std::vector<HistoryPoint2D> context,old_input,next_input;
+    std::vector<RecoveryPlan> plans;
+  };
+
+  static bool sameRecoveryPoints(const std::vector<HistoryPoint2D>& a,
+                                const std::vector<HistoryPoint2D>& b) {
+    if(a.size()!=b.size())return false;
+    for(size_t i=0;i<a.size();++i)
+      if(a[i].stamp!=b[i].stamp || a[i].source_id!=b[i].source_id ||
+         a[i].source_end_id!=b[i].source_end_id || a[i].source_fraction!=b[i].source_fraction ||
+         a[i].x!=b[i].x || a[i].y!=b[i].y)return false;
+    return true;
+  }
+
+  std::vector<HistoryPoint2D> recoverySegment(uint64_t id) const {
+    std::vector<HistoryPoint2D> out;
+    for(const auto& h:recovery_observed_world_)
+      if(h.segment_id==id && !h.predicted && !h.execution_only)out.push_back(h);
+    return out;
+  }
+
+  std::vector<HistoryPoint2D> recoverySupport(const RecoveryPlan& plan,
+      const std::vector<HistoryPoint2D>& next) const {
+    auto out=plan.prefix;
+    out.insert(out.end(),plan.bridge.begin(),plan.bridge.end());
+    for(const auto& h:next)if(h.stamp>plan.join_stamp)out.push_back(h);
+    return out;
+  }
+
+  std::vector<RecoveryPlan> recoveryCandidates(uint64_t from,TrackerDebugState* debug) const {
+    const auto old=recoverySegment(from);
+    if(old.size()<3)return {};
+    uint64_t to=0;
+    for(const auto& h:recovery_observed_world_)if(h.segment_id>from &&
+        !h.predicted && h.stamp>old.back().stamp){to=h.segment_id;break;}
+    if(!to)return {};
+    const auto next=recoverySegment(to);
+    if(debug){debug->recovery_from_segment=from;debug->recovery_to_segment=to;}
+    return fitRecoveryCandidates(old,next,false,debug);
+  }
+
+  std::vector<RecoveryPlan> geometryRecoveryCandidates(TrackerDebugState* debug) const {
+    if(geometry_split_.before.empty() || geometry_split_.after.empty())return {};
+    std::vector<HistoryPoint2D> before,after;
+    for(const auto& h:geometry_split_.before)if(!h.predicted && !h.execution_only)before.push_back(h);
+    for(const auto& h:geometry_split_.after)if(!h.predicted && !h.execution_only)after.push_back(h);
+    return fitRecoveryCandidates(before,after,true,debug);
+  }
+
+  std::vector<RecoveryPlan> fitRecoveryCandidates(const std::vector<HistoryPoint2D>& observed_old,
+      const std::vector<HistoryPoint2D>& next,bool geometry,TrackerDebugState* debug) const {
+    const auto started=std::chrono::steady_clock::now();
+    if(observed_old.size()<3 || next.empty()) {
+      if(debug)debug->recovery_reason="waiting_confirmed_segment";return {};
+    }
+    const auto& a=observed_old.back();const auto& b=next.front();
+    const uint64_t from=a.segment_id,to=b.segment_id;
+    const double dt=(b.stamp-a.stamp).toSec();
+    const double gap=pointDistance(a.x,a.y,b.x,b.y);
+    if(debug){debug->recovery_gap=gap;debug->recovery_gap_time=dt;
+      debug->execution_repair_kind=geometry?"continuous_geometry":"reacquisition";
+      debug->recovery_from_segment=from;debug->recovery_to_segment=to;}
+    // Geometry repair requires continuous observation support. Reacquisition
+    // uses bounded endpoint association because PoseArray has no object IDs.
+    const bool associated=geometry ?
+        (from==to && !a.observation_support_start.isZero() &&
+         !b.observation_support_start.isZero() && b.observation_support_start<=a.stamp &&
+         supportedHistoryEdge(a,b)) :
+        (!a.observation_support_start.isZero() && b.observation_support_start>a.stamp &&
+         dt>0. && dt<=5.*cfg_.recovery_lost_timeout &&
+         gap<=cfg_.recovery_max_speed*dt+2.*cfg_.reference_measurement_sigma);
+    if(!associated || gap>cfg_.recovery_max_distance) {
+      if(debug)debug->recovery_reason="association_unavailable";return {};
+    }
+    auto& cache=geometry?geometry_fit_cache_:recovery_fit_cache_;
+    if(cache.from!=from || cache.to!=to || cache.left_stamp!=a.stamp ||
+       cache.right_stamp!=b.stamp || cache.geometry!=geometry) {
+      cache=RecoveryFitCache();cache.from=from;cache.to=to;cache.geometry=geometry;
+      cache.left_stamp=a.stamp;cache.right_stamp=b.stamp;
+    }
+    auto old=observed_old;
+    old.insert(old.end(),cache.context.begin(),cache.context.end());
+    std::stable_sort(old.begin(),old.end(),[](const HistoryPoint2D& x,const HistoryPoint2D& y){
+      if(x.stamp!=y.stamp)return x.stamp<y.stamp;
+      if(x.history_s!=y.history_s)return x.history_s<y.history_s;
+      return x.source_fraction<y.source_fraction;
+    });
+    old.erase(std::unique(old.begin(),old.end(),[](const HistoryPoint2D& x,const HistoryPoint2D& y){
+      return x.stamp==y.stamp && x.source_id==y.source_id && x.source_end_id==y.source_end_id &&
+          x.source_fraction==y.source_fraction && x.x==y.x && x.y==y.y;
+    }),old.end());
+    size_t keep=old.size()-1;double context_span=0.;
+    while(keep && context_span<1.50) {
+      context_span+=pointDistance(old[keep].x,old[keep].y,old[keep-1].x,old[keep-1].y);--keep;
+    }
+    cache.context.assign(old.begin()+keep,old.end());
+    if(debug)debug->recovery_context_span=context_span;
+    if(next.size()<3) {if(debug)debug->recovery_reason="waiting_confirmed_segment";return {};}
+    const bool unchanged=sameRecoveryPoints(cache.old_input,old) && sameRecoveryPoints(cache.next_input,next);
+    if(!unchanged) {
+      cache.old_input=old;cache.next_input=next;cache.cursor=0;cache.complete=false;cache.plans.clear();
+    } else if(cache.complete) {
+      if(debug){debug->recovery_search_cached=true;debug->recovery_candidates=cache.plans.size();
+        debug->recovery_reason=cache.plans.empty()?"gap_geometry_infeasible":"candidate_ready";}
+      return cache.plans;
+    }
+    auto asRef=[](const std::vector<HistoryPoint2D>& points){
+      std::vector<RefPoint> out;
+      for(const auto& h:points){RefPoint p;p.x=h.x;p.y=h.y;out.push_back(p);}return out;
+    };
+    const OriginSpline before(asRef(old),true,0.20,cfg_.reference_measurement_sigma);
+    const OriginSpline after(asRef(next),true,0.20,cfg_.reference_measurement_sigma);
+    if(after.knots.back().s<cfg_.raw_heading_min_distance) {
+      if(debug)debug->recovery_reason="waiting_confirmed_span";return {};
+    }
+    struct Anchor {size_t left,right;double before,after;bool refined;};
+    std::vector<Anchor> anchors;
+    auto anchor=[&](double before_span,double after_span,bool refined) {
+      size_t left=old.size()-1,right=0;
+      while(left>0 && before.knots.back().s-before.knots[left].s<before_span)--left;
+      while(right+1<next.size() && after.knots[right].s<after_span)++right;
+      for(const auto& existing:anchors)if(existing.left==left && existing.right==right)return;
+      anchors.push_back({left,right,before_span,after_span,refined});
+    };
+    for(double x:{0.,0.30,0.60})for(double y:{0.,0.30,0.60})anchor(x,y,false);
+    const size_t coarse_end=2*anchors.size();
+    for(double x:{0.80,1.00,1.20,0.10,0.20,0.40,0.50,0.70,0.90,1.10})
+      for(double y:{0.30,0.,0.60,0.90,1.20,0.10,0.20,0.40,0.50,0.70,0.80,1.00,1.10})anchor(x,y,true);
+    auto& plans=cache.plans;
+    int trials=0;
+    while(cache.cursor<2*anchors.size()) {
+      if(trials && (trials>=32 || std::chrono::duration<double,std::milli>(
+          std::chrono::steady_clock::now()-started).count()>=3.0))break;
+      const size_t cursor=cache.cursor++;
+      const auto& selected=anchors[cursor/2];
+      const size_t left=selected.left,right=selected.right;
+      const double overlap_before=selected.before,overlap_after=selected.after;
+      const double scale=cursor%2?1.15:1.0;
+      ++trials;
+      RefPoint start=before.at(before.knots[left].s),end=after.at(after.knots[right].s);
+      start.x=old[left].x;start.y=old[left].y;end.x=next[right].x;end.y=next[right].y;
+      const double dx=end.x-start.x,dy=end.y-start.y,length=hypot2(dx,dy);
+      if(dx*std::cos(start.yaw)+dy*std::sin(start.yaw)<=0. ||
+         dx*std::cos(end.yaw)+dy*std::sin(end.yaw)<=0. ||
+         std::fabs(0.30*start.kappa)>=1.)continue;
+      const double beta=std::asin(0.30*start.kappa);
+      const double initial_delta=std::atan(0.60*start.kappa/std::cos(beta));
+      const double body=start.yaw-beta,c=std::cos(body),s=std::sin(body);
+      const auto coefficients=OriginSpline::segment(start,end,length*scale);
+      const int count=std::max(6,static_cast<int>(std::ceil(length*scale/0.01)));
+      std::vector<RefPoint> curve,local;
+      for(int i=0;i<=count;++i) {
+        auto p=OriginSpline::evaluate(coefficients,double(i)/count,length*scale);curve.push_back(p);
+        const double x=p.x-start.x,y=p.y-start.y;
+        p.x=c*x+s*y;p.y=-s*x+c*y;p.yaw=wrapAngle(p.yaw-body);local.push_back(p);
+      }
+      double cap,energy;
+      if(!originFeasible(local,initial_delta,&cap,&energy)) {
+        if(debug)++debug->recovery_steer_rejects;continue;
+      }
+      if(cap<0.10){if(debug)++debug->recovery_rate_rejects;continue;}
+      double error=0.;
+      auto deviation=[&](const HistoryPoint2D& h){
+        double distance=std::numeric_limits<double>::infinity();
+        for(size_t i=1;i<curve.size();++i) {
+          const auto& a=curve[i-1];const auto& b=curve[i];
+          const double x=b.x-a.x,y=b.y-a.y;
+          const double u=clampValue(((h.x-a.x)*x+(h.y-a.y)*y)/std::max(1e-12,x*x+y*y),0.,1.);
+          distance=std::min(distance,pointDistance(h.x,h.y,a.x+u*x,a.y+u*y));
+        }
+        error=std::max(error,distance);
+      };
+      for(size_t i=left;i<old.size();++i)deviation(old[i]);
+      for(size_t i=0;i<=right;++i)deviation(next[i]);
+      if(error>cfg_.reference_measurement_sigma){if(debug)++debug->recovery_shape_rejects;continue;}
+      RecoveryPlan plan;plan.from=from;plan.to=to;plan.join_stamp=next[right].stamp;
+      plan.gap=gap;plan.dt=dt;plan.error=error;
+      plan.geometry=geometry;
+      plan.refined=selected.refined;
+      if(geometry) {
+        plan.split_reason=geometry_split_.reason;
+        plan.split_before=a.stamp.toSec();plan.split_after=b.stamp.toSec();
+      }
+      plan.cost=square(error)+0.002*energy+0.01*(overlap_before+overlap_after);
+      plan.prefix.assign(old.begin(),old.begin()+left+1);
+      for(size_t i=1;i<curve.size();++i) {
+        HistoryPoint2D h;h.x=curve[i].x;h.y=curve[i].y;
+        h.heading=curve[i].yaw;h.curvature=curve[i].kappa;
+        h.predicted=true;h.execution_only=true;
+        if(i+1==curve.size())h=next[right];
+        plan.bridge.push_back(h);
+      }
+      plans.push_back(std::move(plan));
+      if(cache.cursor>=coarse_end && !plans.empty())break;
+    }
+    cache.complete=cache.cursor>=2*anchors.size();
+    std::stable_sort(plans.begin(),plans.end(),[](const RecoveryPlan& a,const RecoveryPlan& b){
+      if(a.refined!=b.refined)return !a.refined;return a.cost<b.cost;
+    });
+    if(debug) {
+      debug->recovery_search_trials+=trials;debug->recovery_candidates=plans.size();
+      debug->recovery_search_deferred=!cache.complete && plans.empty();
+      debug->recovery_reason=plans.empty()?(cache.complete?"gap_geometry_infeasible":"recovery_search_deferred"):"candidate_ready";
+    }
+    return plans;
+  }
+
+  // Integrating body yaw along the center curve is valid during steering
+  // transients too; a constant-radius curvature-to-steer formula is not.
+  bool originFeasible(const std::vector<RefPoint>& path,double initial_delta,double* speed_cap,double* energy,
+                      size_t* feasible_points=NULL,const char** reject=NULL) const {
+    if(feasible_points)*feasible_points=0;
+    if(reject)*reject="none";
+    if(path.size()<3){if(reject)*reject="point_count";return false;}
+    double body_yaw=0.,previous_delta=initial_delta;
+    *speed_cap=0.40;*energy=0.;
+    for(size_t i=0;i<path.size();++i) {
+      double ds=0.;
+      if(i) {
+        ds=pointDistance(path[i-1].x,path[i-1].y,path[i].x,path[i].y);
+        const double course=path[i-1].yaw+0.5*wrapAngle(path[i].yaw-path[i-1].yaw);
+        const double half=body_yaw+0.5*ds*std::sin(wrapAngle(path[i-1].yaw-body_yaw))/0.30;
+        body_yaw=wrapAngle(body_yaw+ds*std::sin(wrapAngle(course-half))/0.30);
+      }
+      const double beta=wrapAngle(path[i].yaw-body_yaw);
+      if(std::fabs(beta)>0.5 || !std::isfinite(beta)){
+        if(reject)*reject="course_limit";return false;
+      }
+      const double delta=std::atan(2.0*std::tan(beta));
+      if(std::fabs(delta)>0.3205){if(reject)*reject="steer_limit";return false;}
+      if(i==0 && std::fabs(delta-initial_delta)>0.003){
+        if(reject)*reject="initial_steer";return false;
+      }
+      if(i && ds>1e-6) {
+        const double derivative=std::fabs(delta-previous_delta)/ds;
+        *speed_cap=std::min(*speed_cap,1.0/std::max(1e-6,derivative));
+        *energy+=derivative*derivative*ds;
+      }
+      previous_delta=delta;
+      if(feasible_points)*feasible_points=i+1;
+    }
+    return true;
+  }
+
+  std::vector<LocalPathPoint> buildOriginReference(const std::vector<RawTrailPoint>& input,
+      const EgoPose2D& ego,TrackerDebugState* debug,double fit_length=0.10,double fit_limit=0.015) const {
+    origin_rate_cap_=0.;origin_residual_=0.;origin_mode_="unavailable";
+    origin_prefix_only_=false;
+    if(debug) {
+      debug->origin_mode="unavailable";debug->origin_reject="insufficient_history";
+      debug->origin_rate_cap=0.;debug->origin_residual=0.;debug->origin_fit_adjust=0.;
+      debug->origin_history_supported=false;
+      debug->origin_history_error=std::numeric_limits<double>::quiet_NaN();
+      debug->origin_history_yaw=std::numeric_limits<double>::quiet_NaN();
+      debug->origin_remaining=0.;debug->origin_candidate_stamp=0.;
+      debug->origin_cached=false;debug->origin_cache_age=-1.;
+      debug->origin_along=0.;debug->origin_initial_kappa=0.;debug->origin_longest_prefix=0.;
+      debug->origin_steer_rejects=0;debug->origin_initial_rejects=0;
+      debug->origin_short_prefixes=0;debug->origin_projection_rejects=0;
+      debug->origin_prefix_only=false;debug->origin_fit_length=fit_length;
+    }
+    origin_reject_="insufficient_history";
+    current_candidate_source_stamp_=input.empty()?ros::Time():input.back().stamp;
+    if(debug) {
+      debug->connector_used=false;debug->reference_geometry_valid=false;
+      debug->published_geometry_valid=false;debug->published_full_valid=false;
+      debug->candidate_full_valid=false;debug->reference_span=0.;debug->reference_source="none";
+      debug->reference_reason="origin_no_history";debug->reference_publish_mode="empty";
+      debug->reference_reject_full_reason="none";debug->reference_backtrack_reject=false;
+      debug->join_state_s=-1.;debug->connector_span=0.;debug->suffix_span=0.;
+      debug->reference_full_kappa_max=0.;debug->reference_full_max_yaw_jump=0.;
+    }
+    std::vector<HistoryPoint2D> world;
+    for(const auto& p:input) {
+      HistoryPoint2D h;h.stamp=p.stamp;h.x=p.x;h.y=p.y;h.heading=p.yaw;
+      h.source_id=p.source_id;h.source_end_id=p.source_end_id;
+      h.source_fraction=p.source_fraction;h.segment_id=p.segment_id;h.history_s=p.history_s;
+      h.predicted=p.predicted;h.observation_support_start=p.observation_support_start;
+      h.execution_only=p.execution_only;
+      world.push_back(h);
+    }
+    bool cached=false;
+    if(world.size()<2) { world=origin_history_cache_;cached=true; }
+    if(world.size()<2)return {};
+    if(cached){fit_length=origin_fit_length_;fit_limit=origin_fit_limit_;}
+    if(debug)debug->origin_fit_length=fit_length;
+    const double cache_age=origin_history_cache_stamp_.isZero() ? -1. :
+        std::max(0.,(ego.stamp-origin_history_cache_stamp_).toSec());
+    if(debug) {
+      debug->origin_cached=cached;debug->origin_cache_age=cache_age;
+      debug->origin_candidate_stamp=current_candidate_source_stamp_.toSec();
+    }
+    if(cached && (cache_age<0. || cache_age>cfg_.reference_last_good_hold_timeout)) {
+      origin_reject_="origin_cache_expired";
+      if(debug)debug->origin_reject=debug->reference_reason=origin_reject_;
       return {};
     }
-
-    const double raw_span = polylineLengthLocal(raw);
-    if (debug != NULL) {
-      debug->raw_direct_publish = false;
-      debug->reference_source = "none";
+    std::vector<RefPoint> history;
+    for(const auto& h:world) {
+      RefPoint p;worldToBodyCenter(ego,h.x,h.y,&p.x,&p.y);
+      if(history.empty() || pointDistance(p.x,p.y,history.back().x,history.back().y)>0.005)history.push_back(p);
     }
-
-    std::vector<RefPoint> ref_profile = makeRefPointsFromRawTrail(raw_trail, ego_now, 0.5);
-    recomputeRefGeometry(&ref_profile);
-    if (ref_profile.empty()) {
-      if (debug != NULL) {
-        debug->reference_reason = "reference_profile_too_short";
-        debug->reference_span = 0.0;
-        debug->reference_publish_mode = "empty_profile";
+    if(history.size()<2)return {};
+    // A startup connector is stored in fixed coordinates once. It remains an
+    // execution prefix, never written into confirmed leader history.
+    auto approach_world=origin_approach_world_;
+    bool approaching=origin_approaching_;
+    bool approach_provisional=origin_approach_provisional_;
+    bool startup_reanchor=false;
+    bool startup_support=false;
+    if(!approach_world.empty()) {
+      const auto& join=approach_world.back();
+      size_t nearest=0;double gap=1e9;
+      for(size_t i=0;i<world.size();++i) {
+        const double d=pointDistance(join.x,join.y,world[i].x,world[i].y);
+        if(d<gap){gap=d;nearest=i;}
       }
-      return {};
-    }
-    const bool provisional_tail_source =
-        debug != NULL &&
-        (debug->selected_segment_source == "motion_tail" ||
-         debug->selected_segment_source == "confirmed_tail" ||
-         debug->motion_tail_promoted_to_reference ||
-         debug->motion_tail_direct_publish);
-
-    if (raw.empty() && ref_profile.size() == 1) {
-      std::vector<LocalPathPoint> held = heldReferenceLocal(ego_now);
-      if (!held.empty()) {
-        if (debug != NULL) {
-          debug->reference_reason = "reference_hold_last_good_anchor_suppressed";
-          debug->reference_span = polylineLengthLocal(held);
-          debug->reference_hold_age = heldReferenceAge(ego_now);
-          debug->reference_publish_mode = "held_last_good";
+      const OriginSpline measured(history,true,fit_length,fit_limit);
+      const double measured_s=measured.projectOrigin();
+      const auto measured_projection=measured.at(measured_s);
+      const bool measured_reached=measured_s>1e-5 &&
+          hypot2(measured_projection.x,measured_projection.y)<0.30;
+      if(measured_reached) approach_world.clear();
+      else if(gap<0.06) {
+        std::vector<RefPoint> support;
+        for(const auto& h:approach_world) {
+          RefPoint p;worldToBodyCenter(ego,h.x,h.y,&p.x,&p.y);
+          support.push_back(p);
         }
-        return held;
-      }
-      if (!cfg_.reference_anchor_connector_enabled) {
-        if (debug != NULL) {
-          debug->reference_reason = "reference_anchor_connector_suppressed";
-          debug->reference_span = 0.0;
-          debug->reference_publish_mode = "empty_anchor_suppressed";
-        }
-        return {};
-      }
-      std::vector<RefPoint> anchor_ref;
-      RefPoint origin;
-      origin.v_ref = std::min(0.3, std::max(0.10, ref_profile.front().v_ref));
-      origin.a_ref = 0.0;
-      anchor_ref.push_back(origin);
-      const std::vector<RefPoint> connector = buildConnector(ref_profile.front());
-      if (connector.empty()) {
-        anchor_ref.push_back(ref_profile.front());
+        // Do not bridge a changed endpoint. Keep the fixed approach only while
+        // the same observed join is still present.
+        for(size_t i=nearest+1;i<history.size();++i)support.push_back(history[i]);
+        history=support;startup_support=true;
       } else {
-        for (size_t i = 1; i < connector.size(); ++i) {
-          anchor_ref.push_back(connector[i]);
+        // Bootstrap fitting can replace its provisional first point with the
+        // first confirmed point. Re-anchor once on that supported transition;
+        // do not leave the state machine permanently outside both branches.
+        const bool continuous=!world.front().observation_support_start.isZero() &&
+            !origin_history_cache_.empty() &&
+            world.front().observation_support_start<=origin_history_cache_.front().stamp &&
+            world.front().stamp>=origin_history_cache_.front().stamp;
+        startup_reanchor=approach_provisional && !world.front().predicted && continuous;
+        approaching=startup_reanchor;
+        approach_world.clear();
+      }
+    }
+    // Diagnose against the original measured history, not the fitted support
+    // or the startup execution prefix.
+    if(debug) {
+      double nearest=1e9;
+      const bool recovery=std::any_of(world.begin(),world.end(),
+          [](const HistoryPoint2D& h){return h.execution_only;});
+      const auto& measured=recovery?recovery_observed_world_:world;
+      for(size_t i=1;i<measured.size();++i) {
+        if(measured[i].execution_only || measured[i-1].execution_only ||
+           !supportedHistoryEdge(measured[i-1],measured[i]))continue;
+        double ax,ay,bx,by;worldToBodyCenter(ego,measured[i-1].x,measured[i-1].y,&ax,&ay);
+        worldToBodyCenter(ego,measured[i].x,measured[i].y,&bx,&by);
+        const double dx=bx-ax,dy=by-ay,len2=dx*dx+dy*dy;
+        if(len2<1e-8)continue;
+        const double u=clampValue(-(ax*dx+ay*dy)/len2,0.,1.);
+        const double x=ax+u*dx,y=ay+u*dy,d=hypot2(x,y);
+        if(d<nearest && d<0.60) {
+          nearest=d;debug->origin_history_supported=true;
+          debug->origin_history_yaw=std::atan2(dy,dx);
+          debug->origin_history_error=std::sin(debug->origin_history_yaw)*x-
+                                      std::cos(debug->origin_history_yaw)*y;
         }
       }
-      recomputeRefGeometry(&anchor_ref);
-      std::vector<LocalPathPoint> final_local = makeLocalPathFromRefPoints(anchor_ref);
-      if (debug != NULL) {
-        debug->reference_reason = "reference_anchor_connector";
-        debug->reference_span = polylineLengthLocal(final_local);
-        debug->reference_publish_mode = "anchor_connector";
-      }
-      return final_local;
     }
+    OriginSpline curve(history,true,fit_length,fit_limit);
+    if(debug)debug->origin_fit_adjust=curve.fit_adjust;
+    const double start=curve.projectOrigin();
+    const RefPoint projection=curve.at(start);
 
-    if (static_cast<int>(raw.size()) < cfg_.reference_min_points && ref_profile.size() < 2) {
-      if (debug != NULL) {
-        debug->reference_reason = "reference_insufficient_points";
-        debug->reference_span = raw_span;
-        debug->reference_publish_mode = "empty_insufficient";
-      }
-      return {};
+    const double d0=std::sin(projection.yaw)*projection.x-std::cos(projection.yaw)*projection.y;
+    const double along=projection.x*std::cos(projection.yaw)+projection.y*std::sin(projection.yaw);
+    const double beta=std::atan(0.5*std::tan(ego.delta));
+    const double rear_kappa=std::tan(ego.delta)/0.60;
+    double delta_rate=0.;
+    if(origin_previous_stamp_.isValid() && ego.stamp>origin_previous_stamp_ && std::fabs(ego.v)>0.05)
+      delta_rate=clampValue((ego.delta-origin_previous_delta_)/(ego.stamp-origin_previous_stamp_).toSec(),-1.,1.);
+    const double beta_prime=0.5/(std::cos(ego.delta)*std::cos(ego.delta)*(1+0.25*std::tan(ego.delta)*std::tan(ego.delta)));
+    const double initial_kappa=rear_kappa*std::cos(beta)+beta_prime*delta_rate/std::max(0.05,std::fabs(ego.v)/std::cos(beta));
+    if(debug){debug->origin_along=along;debug->origin_initial_kappa=initial_kappa;}
+    origin_previous_delta_=ego.delta;origin_previous_stamp_=ego.stamp;
+    std::vector<RefPoint> best;double best_cost=std::numeric_limits<double>::infinity();double best_cap=0.,best_end=0.;
+    const double available=curve.knots.back().s-start;
+    if(debug){debug->origin_remaining=available;debug->join_state_s=start;}
+    std::vector<RefPoint> previous_local;
+    double previous_start=0.,previous_distance=1e9;
+    for(const auto& h:origin_previous_plan_world_) {
+      RefPoint p;worldToBodyCenter(ego,h.x,h.y,&p.x,&p.y);
+      if(!previous_local.empty())p.s=previous_local.back().s+
+          pointDistance(p.x,p.y,previous_local.back().x,previous_local.back().y);
+      if(hypot2(p.x,p.y)<previous_distance){previous_distance=hypot2(p.x,p.y);previous_start=p.s;}
+      previous_local.push_back(p);
     }
-    if (!raw.empty() && raw_span < cfg_.reference_min_span && ref_profile.size() < 2) {
-      if (debug != NULL) {
-        debug->reference_reason = "reference_span_too_short";
-        debug->reference_span = raw_span;
-        debug->reference_publish_mode = "empty_span_short";
-      }
-      return {};
-    }
-
-    const double min_suffix_after_join =
-        raw_span >= cfg_.reference_mature_min_raw_span
-            ? cfg_.reference_join_min_suffix_span_mature
-            : (raw_span >= cfg_.reference_join_min_suffix_span
-                   ? cfg_.reference_join_min_suffix_span
-                   : cfg_.reference_join_min_suffix_span_short);
-    const JoinChoice initial_join = chooseJoinIndex(ref_profile, min_suffix_after_join);
-    ReferenceValidation validation;
-    std::vector<RefPoint> best_combined;
-    JoinChoice best_join;
-    std::string reject_reason = "reference_join_invalid";
-    const int max_retries = std::max(0, cfg_.reference_max_join_retries);
-    for (int retry = 0; retry <= max_retries; ++retry) {
-      JoinChoice candidate_join = retryJoinChoice(ref_profile, initial_join, retry, min_suffix_after_join);
-      if (!candidate_join.valid) {
-        if (debug != NULL) {
-          debug->join_reject_reason = "suffix_after_join_too_short";
-        }
-        continue;
-      }
-      const double suffix_after_join =
-          remainingSuffixSpan(ref_profile, candidate_join.join_point.s);
-      if (debug != NULL) {
-        debug->suffix_after_join_span = suffix_after_join;
-      }
-      if (suffix_after_join + 1e-6 < min_suffix_after_join) {
-        reject_reason = "reference_suffix_span_short";
-        if (debug != NULL) {
-          debug->join_reject_reason = reject_reason;
-        }
-        continue;
-      }
-      std::vector<RefPoint> combined = buildReferenceCandidate(ref_profile, candidate_join, &validation);
-      if (debug != NULL) {
-        debug->reference_splice_kappa_max = validation.kappa_max;
-        debug->reference_splice_yaw_jump = validation.max_yaw_jump;
-        debug->reference_backtrack_reject = validation.backtrack;
-        debug->reference_join_retry_count = retry;
-      }
-      if (validation.ok) {
-        const std::vector<LocalPathPoint> combined_local = makeLocalPathFromRefPoints(combined);
-        const ReferenceGeometryAudit full_audit = auditLocalReferenceFull(combined_local);
-        if (!full_audit.ok && full_audit.valid_prefix_points >= 2 &&
-            full_audit.valid_prefix_points <= combined_local.size()) {
-          std::vector<LocalPathPoint> prefix(combined_local.begin(),
-                                             combined_local.begin() + full_audit.valid_prefix_points);
-          const double prefix_span = polylineLengthLocal(prefix);
-          const double connector_span = hypot2(candidate_join.join_point.x,
-                                               candidate_join.join_point.y);
-          const double preserved_suffix = std::max(0.0, prefix_span - connector_span);
-          const double min_preserved_suffix =
-              suffix_after_join >= cfg_.reference_join_min_suffix_span
-                  ? cfg_.reference_min_suffix_preserve_span
-                  : cfg_.reference_min_suffix_preserve_span_short;
-          if (debug != NULL) {
-            debug->splice_preserved_suffix_span = preserved_suffix;
-            debug->candidate_full_span_before_audit = polylineLengthLocal(combined_local);
-            debug->candidate_full_span_after_audit = prefix_span;
+    OriginSpline previous_curve(previous_local);
+    // Startup has no measured near-field history. Its one-time approach is
+    // explicitly distinguished from a return along observed history.
+    if(along>1e-5 && start<1e-4 && approaching && !startup_support) {
+      RefPoint first;first.yaw=beta;first.kappa=initial_kappa;
+      for(double end=0.;end<=std::min(available,0.8)+1e-6;end+=0.10) {
+        const RefPoint goal=curve.at(start+end);const double length=hypot2(goal.x,goal.y);
+        if(length<0.10)continue;
+        const auto c=OriginSpline::segment(first,goal,length);
+        std::vector<RefPoint> candidate;const int n=std::max(6,static_cast<int>(std::ceil(length/0.01)));
+        for(int i=0;i<=n;++i)candidate.push_back(OriginSpline::evaluate(c,double(i)/n,length));
+        for(double s=start+end+0.02;s<curve.knots.back().s;s+=0.02)candidate.push_back(curve.at(s));
+        double cap,energy;
+        if(originFeasible(candidate,ego.delta,&cap,&energy) && cap>0.01) {
+          best=candidate;best_cap=cap;best_end=length;origin_mode_="initial_approach";
+          approach_world.clear();
+          approaching=false;
+          approach_provisional=world.front().predicted;
+          if(startup_reanchor)origin_mode_="initial_approach_reanchored";
+          for(int i=0;i<=n;++i) {
+            HistoryPoint2D h;h.stamp=world.back().stamp;
+            bodyCenterToWorld(ego,candidate[i].x,candidate[i].y,&h.x,&h.y);
+            approach_world.push_back(h);
           }
-          if (preserved_suffix + 1e-6 < min_preserved_suffix) {
-            reject_reason = "reference_trim_connector_only";
-            if (debug != NULL) {
-              debug->join_reject_reason = reject_reason;
-              debug->splice_trim_rejected_connector_only = true;
-              debug->reference_full_max_yaw_jump = full_audit.max_yaw_jump;
-              debug->reference_full_backtrack_count = full_audit.backtrack_count;
-              debug->reference_full_kappa_max = full_audit.kappa_max;
+          break;
+        }
+      }
+    } else if(std::fabs(along)<1e-5 && available>0.12) {
+      approaching=false;
+      const double a=1-projection.kappa*d0;
+      if(a<0.20){origin_reject_="projection_singular";
+        if(debug)debug->origin_reject=debug->reference_reason=origin_reject_;return {};}
+      const auto initial_frame=curve.frameAt(start);
+      const double hs=initial_frame.speed,hspeed_prime=initial_frame.speed_rate;
+      const double dp=a*hs*std::tan(wrapAngle(beta-projection.yaw));
+      const double kp=initial_frame.kappa_rate;
+      const double ddp=(initial_kappa*std::pow(a*a*hs*hs+dp*dp,1.5)-
+          projection.kappa*a*a*hs*hs*hs-kp*d0*hs*dp-
+          2.*projection.kappa*hs*dp*dp+a*hspeed_prime*dp)/std::max(1e-6,a*hs);
+      std::vector<double> return_lengths;
+      const double return_extent=std::min(available,std::min(5.0,2.5+4.*std::fabs(d0)));
+      const double minimum_length=std::min(0.20,return_extent);
+      if(origin_return_length_>0.) {
+        const double warm=clampValue(origin_return_length_,minimum_length,return_extent);
+        for(double offset:{0.,-0.12,0.12,-0.30,0.30})
+          return_lengths.push_back(clampValue(warm+offset,minimum_length,return_extent));
+      } else {
+        const double step=std::max(0.12,return_extent/10.);
+        for(double l=minimum_length;l<return_extent;l+=step)return_lengths.push_back(l);
+      }
+      return_lengths.push_back(return_extent);
+      return_lengths.push_back(minimum_length);
+      const double sampled_support=std::min(available,std::max(2.5,return_extent));
+      const int sample_count=std::max(6,static_cast<int>(std::ceil(sampled_support/0.015)));
+      std::vector<OriginSpline::Frame> frames;
+      for(int i=0;i<=sample_count;++i)frames.push_back(
+          curve.frameAt(start+sampled_support*i/sample_count));
+      // Full return and supported partial return share the same six boundary
+      // conditions. Partial candidates never extend H beyond observed support.
+      for(int residual=0;residual<=4;++residual) {
+        const double fraction=0.25*residual;
+        for(double length:return_lengths) {
+          const double c0=d0,c1=dp*length,c2=0.5*ddp*length*length;
+          const double D=fraction*d0-c0-c1-c2,V=-c1-2*c2,A=-2*c2;
+          const double c3=10*D-4*V+0.5*A,c4=-15*D+7*V-A,c5=6*D-3*V+0.5*A;
+          auto point=[&](double arc) {
+            RefPoint h=curve.at(start+arc);const double u=clampValue(arc/length,0.,1.);
+            const double d=arc<=length ? c0+u*(c1+u*(c2+u*(c3+u*(c4+u*c5)))) : fraction*d0;
+            h.x-=d*std::sin(h.yaw);h.y+=d*std::cos(h.yaw);return h;
+          };
+          std::vector<RefPoint> candidate;double error=0.;
+          const double requested_support=std::min(available,std::max(length,2.5));
+          const int n=std::min(sample_count,static_cast<int>(
+              std::floor(requested_support*sample_count/sampled_support+1e-8)));
+          const double support=sampled_support*n/sample_count;
+          for(int i=0;i<=n;++i) {
+            const auto& frame=frames[i];const auto& h=frame.h;
+            const double arc=frame.arc-start,u=clampValue(arc/length,0.,1.);
+            const double d=arc<=length ? c0+u*(c1+u*(c2+u*(c3+u*(c4+u*c5)))) : fraction*d0;
+            const double d1=arc<=length ? (c1+u*(2*c2+u*(3*c3+u*(4*c4+u*5*c5))))/length : 0.;
+            const double d2=arc<=length ? (2*c2+u*(6*c3+u*(12*c4+u*20*c5)))/(length*length) : 0.;
+            const double a=1.-h.kappa*d,t=a*frame.speed;
+            const double at=-frame.kappa_rate*d*frame.speed-
+                2*h.kappa*d1*frame.speed+a*frame.speed_rate;
+            const double an=a*frame.speed*frame.speed*h.kappa+d2;
+            RefPoint p;p.x=h.x-d*std::sin(h.yaw);p.y=h.y+d*std::cos(h.yaw);
+            p.yaw=wrapAngle(h.yaw+std::atan2(d1,t));
+            p.kappa=(t*an-d1*at)/std::pow(std::max(1e-10,t*t+d1*d1),1.5);
+            if(i==0) {
+              if(hypot2(p.x,p.y)>1e-5){if(debug)++debug->origin_projection_rejects;candidate.clear();break;}
+              p.x=0.;p.y=0.;
             }
-            continue;
+            p.analytic_geometry=true;candidate.push_back(p);
+            error+=square(d);
+          }
+          double cap,energy;
+          if(candidate.size()<3)continue;
+          size_t feasible_points=0;
+          const char* rejected="none";
+          const bool full_feasible=originFeasible(candidate,ego.delta,&cap,&energy,&feasible_points,&rejected);
+          if(debug) {
+            debug->origin_longest_prefix=std::max(debug->origin_longest_prefix,
+                support*double(feasible_points?feasible_points-1:0)/std::max(1,n));
+            if(std::string(rejected)=="steer_limit" || std::string(rejected)=="course_limit")++debug->origin_steer_rejects;
+            if(std::string(rejected)=="initial_steer")++debug->origin_initial_rejects;
+          }
+          double candidate_span=support;
+          if(!full_feasible) {
+            if(feasible_points<3)continue;
+            candidate.resize(feasible_points);
+            candidate_span=support*double(feasible_points-1)/n;
+            if(candidate_span<0.20){if(debug)++debug->origin_short_prefixes;continue;}
+            if(!originFeasible(candidate,ego.delta,&cap,&energy))continue;
+          }
+          if(cap<0.01)continue;
+          const double end_u=clampValue(candidate_span/length,0.,1.);
+          const double end_d=c0+end_u*(c1+end_u*(c2+end_u*(c3+end_u*(c4+end_u*c5))));
+          double temporal=0.;
+          if(previous_local.size()>2 && previous_distance<0.20) {
+            for(double arc:{0.15,0.30,0.45,0.60}) {
+              if(arc>support || previous_start+arc>previous_curve.knots.back().s)break;
+              const auto p=point(arc),prior=previous_curve.at(previous_start+arc);
+              temporal+=square(p.x-prior.x)+square(p.y-prior.y);
+            }
+          }
+          const double cost=error/double(n+1)+2*square(end_d)+
+              0.002*energy+0.20*temporal+0.02*std::max(0.,0.27-cap)+
+              (full_feasible?0.:1.0+0.10/(candidate_span+0.10));
+          if(cost<best_cost) {
+            best_cost=cost;best=candidate;best_cap=cap;best_end=std::min(length,candidate_span);
+            origin_prefix_only_=!full_feasible;
+            origin_residual_=end_d;
+            origin_mode_=!full_feasible?"history_return_prefix":
+                         (residual?"history_return_partial":"history_return");
           }
         }
-        const ConnectorInnerCutAudit inner_cut =
-            auditConnectorInnerCut(candidate_join, suffix_after_join);
-        if (debug != NULL) {
-          debug->connector_inner_cut_score =
-              std::max(debug->connector_inner_cut_score, inner_cut.score);
-          debug->connector_lateral_shortcut =
-              std::max(debug->connector_lateral_shortcut, inner_cut.lateral_shortcut);
-        }
-        if (inner_cut.inner_cut) {
-          reject_reason = "reference_connector_inner_cut";
-          if (debug != NULL) {
-            debug->join_reject_reason = reject_reason;
-            debug->anti_inner_cut_rejoin = true;
-          }
-          continue;
-        }
-        best_combined.swap(combined);
-        best_join = candidate_join;
-        break;
-      }
-      reject_reason = validation.reason;
-      if (debug != NULL && debug->join_reject_reason == "none") {
-        debug->join_reject_reason = reject_reason;
+        if(!best.empty() && best_cap>=0.27 && origin_mode_!="history_return_prefix")break;
       }
     }
-
-    if (best_combined.empty()) {
-      std::vector<LocalPathPoint> held = heldReferenceLocal(ego_now);
-      if (!held.empty()) {
-        if (debug != NULL) {
-          debug->reference_reason = "reference_hold_last_good_" + reject_reason;
-          debug->reference_span = polylineLengthLocal(held);
-          debug->reference_hold_age = heldReferenceAge(ego_now);
-          debug->reference_publish_mode = "held_last_good";
-        }
-        return held;
-      }
-      if (debug != NULL) {
-        debug->reference_reason = reject_reason;
-        debug->reference_span = 0.0;
-        debug->reference_publish_mode = "empty_reject";
-      }
+    if(best.empty()) {
+      origin_reject_=available<=0.12 ? "origin_history_exhausted" :
+          (std::fabs(along)>=1e-5 && origin_mode_!="initial_approach" ?
+           "origin_projection_outside_history" : "origin_geometry_infeasible");
+      if(debug){debug->reference_reason=origin_reject_;debug->origin_reject=origin_reject_;}
       return {};
     }
+    std::vector<LocalPathPoint> out;
+    for(const auto& p:best)out.push_back(localPathPointFromRef(p));
+    origin_reject_="none";origin_rate_cap_=best_cap;origin_return_length_=best_end;
+    origin_fit_length_=fit_length;origin_fit_limit_=fit_limit;
+    origin_approach_world_=std::move(approach_world);origin_approaching_=approaching;
+    origin_approach_provisional_=approach_provisional;
+    if(startup_support)origin_mode_="initial_approach_tracking";
+    origin_previous_plan_world_.clear();
+    for(const auto& p:best) {
+      HistoryPoint2D h;h.stamp=world.back().stamp;
+      bodyCenterToWorld(ego,p.x,p.y,&h.x,&h.y);
+      origin_previous_plan_world_.push_back(h);
+    }
+    if(!cached){origin_history_cache_=world;origin_history_cache_stamp_=ego.stamp;}
+    current_geometry_source_stamp_=world.back().stamp;
+    if(debug) {
+      debug->origin_mode=origin_mode_;debug->origin_reject="none";
+      debug->origin_prefix_only=origin_prefix_only_;
+      debug->origin_rate_cap=origin_rate_cap_;debug->origin_residual=origin_residual_;
+      debug->reference_span=polylineLengthLocal(out);debug->candidate_reference_span=debug->reference_span;
+      debug->reference_reason="reference_stitched_tail";
+      debug->reference_publish_mode=cached?"held_last_good":"ready";
+      debug->reference_source="stitched_tail";debug->selected_segment_source="confirmed_tail";
+      debug->reference_estimator_confidence=cached?0.55:0.80;
+      debug->connector_used=true;debug->connector_span=best_end;debug->join_state_s=start;
+      debug->suffix_span=std::max(0.,available-best_end);debug->suffix_after_join_span=debug->suffix_span;
+      debug->reference_geometry_valid=true;debug->published_geometry_valid=true;
+      debug->published_full_valid=true;debug->candidate_full_valid=true;
+      debug->reference_full_backtrack_count=0;debug->reference_full_max_yaw_jump=0.;
+      debug->reference_full_kappa_max=0.;
+      for(size_t i=0;i<out.size();++i){debug->reference_full_kappa_max=std::max(debug->reference_full_kappa_max,std::fabs(out[i].curvature));if(i)debug->reference_full_max_yaw_jump=std::max(debug->reference_full_max_yaw_jump,std::fabs(wrapAngle(out[i].yaw-out[i-1].yaw)));}
+      debug->reference_health_score=1.;debug->published_suffix_preserved_ok=true;
+      debug->reference_reject_full_reason="none";debug->connector_only_publish_blocked=false;
+    }
+    return out;
+  }
 
-    std::vector<LocalPathPoint> final_local = makeLocalPathFromRefPoints(best_combined);
-    const double final_span = polylineLengthLocal(final_local);
-	    if (debug != NULL) {
-	      debug->connector_used = best_join.valid && hypot2(best_join.join_point.x, best_join.join_point.y) >
-	                                  cfg_.reference_direct_attach_dist;
-      debug->connector_join_index =
-          best_join.valid ? static_cast<int>(best_join.suffix_index) : -1;
-      debug->connector_span = best_join.valid ? hypot2(best_join.join_point.x, best_join.join_point.y) : 0.0;
-      debug->stitched_span = final_span;
-      debug->suffix_span = best_join.valid ? remainingSuffixSpan(ref_profile, best_join.join_point.s) : 0.0;
-      debug->suffix_after_join_span = debug->suffix_span;
-	      debug->join_connector_ratio =
-	          debug->connector_span / std::max(0.10, debug->connector_span + debug->suffix_span);
-	      debug->join_index_smooth = best_join.valid ? best_join.join_point.s : -1.0;
-	      debug->join_index_jump =
-	          (best_join.valid && last_join_s_valid_)
-	              ? std::fabs(best_join.join_point.s - last_join_s_)
-	              : 0.0;
-	      debug->join_state_s = best_join.valid ? best_join.join_point.s : -1.0;
-	      debug->join_reselect_reason =
-	          !best_join.valid ? "invalid" :
-	          (!last_join_s_valid_ ? "init" :
-	           (debug->join_index_jump <= std::max(0.05, cfg_.reference_join_stability_window)
-	                ? "stable_neighborhood"
-	                : "reselected"));
-	      debug->publisher_retry_join_count = debug->reference_join_retry_count;
-	      if (debug->reference_estimator_confidence <= 1e-6) {
-        const bool mature_input =
-            static_cast<int>(raw_trail.size()) >= cfg_.reference_mature_min_history_points &&
-            raw_span >= cfg_.reference_mature_min_raw_span;
-        debug->reference_estimator_confidence =
-            provisional_tail_source ? 0.65 : (mature_input ? 1.0 : 0.75);
-      }
-    }
-	    const bool mature =
-        static_cast<int>(raw_trail.size()) >= cfg_.reference_mature_min_history_points &&
-        static_cast<int>(best_combined.size()) >= cfg_.reference_mature_min_points &&
-        raw_span >= cfg_.reference_mature_min_raw_span &&
-        final_span >= cfg_.reference_mature_min_span;
-	    if (!mature) {
-      if (final_local.size() >= static_cast<size_t>(std::max(2, cfg_.reference_degraded_raw_min_points)) &&
-          final_span >= cfg_.reference_degraded_raw_min_span) {
-        if (final_span >= std::max(0.35, cfg_.reference_degraded_raw_min_span)) {
-          rememberLastGoodLocalReference(final_local, ego_now);
-        }
-	        if (debug != NULL) {
-          debug->reference_reason =
-              provisional_tail_source ? "reference_stitched_tail" : "reference_stitched_provisional";
-          debug->reference_span = final_span;
-          debug->reference_publish_mode = "provisional_tail";
-          debug->reference_trackable_raw = final_span >= std::max(0.60, cfg_.reference_degraded_raw_min_span);
-	          debug->reference_source =
-	              provisional_tail_source ? "stitched_tail" : "stitched_confirmed";
-	          debug->bootstrap_stitched =
-	              final_span < std::max(0.80, cfg_.reference_mature_min_span) ||
-	              raw_span < cfg_.reference_mature_min_raw_span;
-	          debug->selected_segment_source =
-              provisional_tail_source ? debug->selected_segment_source : "stitched_confirmed";
-          debug->motion_tail_used_as_reference =
-              debug->motion_tail_used_as_reference || provisional_tail_source;
-          debug->motion_tail_promoted_to_reference =
-              debug->motion_tail_promoted_to_reference || provisional_tail_source;
-	        }
-	        if (best_join.valid) {
-	          last_join_s_ = best_join.join_point.s;
-	          last_join_index_ = static_cast<int>(best_join.suffix_index);
-	          last_join_s_valid_ = true;
-	        }
-	        return final_local;
-	      }
-      std::vector<LocalPathPoint> held = heldReferenceLocal(ego_now);
-      if (!held.empty()) {
-        if (debug != NULL) {
-          debug->reference_reason = "reference_hold_last_good_immature";
-          debug->reference_span = polylineLengthLocal(held);
-          debug->reference_hold_age = heldReferenceAge(ego_now);
-          debug->reference_publish_mode = "held_last_good";
-        }
-        return held;
-      }
-      if (debug != NULL) {
-        debug->reference_reason = "reference_immature";
-        debug->reference_span = final_span;
-        debug->reference_publish_mode = "empty_immature";
-      }
-      return {};
-    }
-	    rememberLastGoodReference(best_combined, ego_now);
-	    if (best_join.valid) {
-	      last_join_s_ = best_join.join_point.s;
-	      last_join_index_ = static_cast<int>(best_join.suffix_index);
-	      last_join_s_valid_ = true;
-	    }
-    if (debug != NULL) {
-      debug->reference_reason = "reference_ready";
-      debug->reference_span = final_span;
-      debug->reference_publish_mode = "ready";
-      debug->reference_source = provisional_tail_source ? "stitched_tail" : "stitched_confirmed";
-    }
+  ros::Time acceptedSourceStamp() const { return current_geometry_source_stamp_; }
+  const std::vector<HistoryPoint2D>& recoverySupportForDebug() const { return recovery_support_world_; }
 
-    return final_local;
+  void adoptOriginPlan(const PathGenerator& accepted) const {
+    origin_history_cache_=accepted.origin_history_cache_;
+    origin_history_cache_stamp_=accepted.origin_history_cache_stamp_;
+    origin_previous_stamp_=accepted.origin_previous_stamp_;
+    origin_previous_delta_=accepted.origin_previous_delta_;
+    origin_approaching_=accepted.origin_approaching_;
+    origin_approach_provisional_=accepted.origin_approach_provisional_;
+    origin_approach_world_=accepted.origin_approach_world_;
+    origin_previous_plan_world_=accepted.origin_previous_plan_world_;
+    origin_return_length_=accepted.origin_return_length_;
+    origin_rate_cap_=accepted.origin_rate_cap_;
+    origin_residual_=accepted.origin_residual_;
+    origin_mode_=accepted.origin_mode_;origin_reject_=accepted.origin_reject_;
+    origin_prefix_only_=accepted.origin_prefix_only_;
+    origin_fit_length_=accepted.origin_fit_length_;origin_fit_limit_=accepted.origin_fit_limit_;
+    current_candidate_source_stamp_=accepted.current_candidate_source_stamp_;
+    current_geometry_source_stamp_=accepted.current_geometry_source_stamp_;
+  }
+
+  std::vector<LocalPathPoint> buildOriginCandidate(const std::vector<RawTrailPoint>& raw_trail,
+                                               const std::vector<LocalPathPoint>& raw,
+                                               const EgoPose2D& ego_now,
+                                               TrackerDebugState* debug) const {
+    const ros::Time previous_stamp=origin_previous_stamp_;
+    const double previous_delta=origin_previous_delta_;
+    const PathGenerator before(*this);
+    const TrackerDebugState context=debug?*debug:TrackerDebugState();
+    if(debug)debug->origin_candidate_reject=raw_trail.empty()?"no_raw_history":"none";
+    auto candidate=buildOriginReference(raw_trail,ego_now,debug);
+    const std::string original_reject=origin_reject_;
+    const std::string refit_reason=origin_prefix_only_?"short_executable_prefix":original_reject;
+    // Increase coordinate-fit support only when the original fit has no
+    // executable continuation. Each trial starts from the same prior state;
+    // measured history, actuator limits and the origin constraint stay fixed.
+    if(!raw_trail.empty() && (origin_prefix_only_ || origin_reject_=="origin_geometry_infeasible" ||
+                             origin_reject_=="projection_singular")) {
+      for(double length:{0.60/3.,0.60/2.}) {
+        PathGenerator trial(before);TrackerDebugState trial_debug=context;
+        auto fitted=trial.buildOriginReference(raw_trail,ego_now,&trial_debug,length,
+            std::max(0.015,cfg_.reference_measurement_sigma));
+        if(fitted.empty())continue;
+        const bool better=candidate.empty() || (!trial.origin_prefix_only_ && origin_prefix_only_) ||
+            (trial.origin_prefix_only_==origin_prefix_only_ &&
+             polylineLengthLocal(fitted)>polylineLengthLocal(candidate)+1e-6);
+        if(better) {
+          adoptOriginPlan(trial);candidate=std::move(fitted);
+          if(debug){*debug=trial_debug;debug->origin_candidate_reject=refit_reason;}
+        }
+        if(!origin_prefix_only_ && !candidate.empty())break;
+      }
+    }
+    if(!candidate.empty() || raw_trail.empty() || origin_history_cache_.empty())return candidate;
+    const std::string rejected=origin_reject_;
+    const ros::Time candidate_source=current_candidate_source_stamp_;
+    const double candidate_stamp=raw_trail.back().stamp.toSec();
+    // Replan from previously accepted measured history, not from an old local
+    // path or a new straight bridge. The same origin/actuator checks still run.
+    origin_previous_stamp_=previous_stamp;origin_previous_delta_=previous_delta;
+    candidate=buildOriginReference({},ego_now,debug);
+    current_candidate_source_stamp_=candidate_source;
+    if(debug){debug->origin_candidate_reject=rejected;debug->origin_candidate_stamp=candidate_stamp;}
+    if(!candidate.empty()) {
+      origin_mode_="cached_"+origin_mode_;
+      if(debug){debug->origin_mode=origin_mode_;debug->reference_publish_mode="held_last_good";}
+    }
+    return candidate;
+  }
+
+  bool boundRecoveryPrefix(double span,double speed,TrackerDebugState* debug) const {
+    // Use the current longitudinal bounds, with a conservative reaction
+    // reserve plus the jerk-limited transition from acceleration to braking.
+    // This only caps a truncated prefix; it never raises a speed limit.
+    const double decel=0.36,reserve=0.10;
+    const double reaction=1.0+(0.28+decel)/0.80;
+    speed=std::fabs(speed);
+    const double term=decel*reaction;
+    const double cap=std::sqrt(term*term+2.*decel*std::max(0.,span-reserve))-term;
+    const double margin=span-reserve-speed*reaction-square(speed)/(2.*decel);
+    if(debug) {
+      debug->recovery_prefix_span=span;debug->recovery_prefix_speed_cap=cap;
+      debug->recovery_stopping_margin=margin;
+    }
+    if(!std::isfinite(speed) || !std::isfinite(span) || margin<0. || cap<0.01)return false;
+    origin_rate_cap_=std::min(origin_rate_cap_,cap);
+    if(debug)debug->origin_rate_cap=origin_rate_cap_;
+    return true;
+  }
+
+  std::vector<LocalPathPoint> buildReferencePath(const std::vector<RawTrailPoint>& raw_trail,
+                                               const std::vector<LocalPathPoint>& raw,
+                                               const EgoPose2D& ego_now,
+                                               TrackerDebugState* debug) const {
+    const auto recovery_started=std::chrono::steady_clock::now();
+    if(debug) {
+      debug->recovery_active=false;debug->recovery_reason="none";
+      debug->recovery_from_segment=debug->recovery_to_segment=0;
+      debug->recovery_gap=debug->recovery_gap_time=debug->recovery_fit_error=0.;
+      debug->recovery_candidate_reject=debug->recovery_replan_trigger="none";
+      debug->recovery_prefix_span=debug->recovery_stopping_margin=debug->recovery_prefix_speed_cap=0.;
+      debug->recovery_replanned=false;
+      debug->recovery_search_trials=debug->recovery_candidates=debug->recovery_origin_attempts=0;
+      debug->recovery_steer_rejects=debug->recovery_rate_rejects=debug->recovery_shape_rejects=0;
+      debug->recovery_context_span=0.;debug->recovery_search_cached=debug->recovery_search_deferred=false;
+      debug->execution_repair_kind="none";
+    }
+    auto acceptRecovery=[&](const RecoveryPlan& plan,const std::vector<HistoryPoint2D>& next) {
+      if(debug)++debug->recovery_origin_attempts;
+      PathGenerator trial(*this);TrackerDebugState d=debug?*debug:TrackerDebugState();
+      const auto support=recoverySupport(plan,next);
+      auto path=trial.buildOriginCandidate(makeRawTrailPoints(support),raw,ego_now,&d);
+      d.recovery_candidate_reject="none";
+      d.recovery_prefix_span=d.recovery_stopping_margin=d.recovery_prefix_speed_cap=0.;
+      if(path.empty())d.recovery_candidate_reject=d.origin_reject;
+      else if(d.origin_cached)d.recovery_candidate_reject="cached_candidate";
+      else if(trial.origin_prefix_only_ &&
+              !trial.boundRecoveryPrefix(polylineLengthLocal(path),ego_now.v,&d))
+        d.recovery_candidate_reject="prefix_stopping_distance";
+      if(d.recovery_candidate_reject!="none") {
+        if(debug) {
+          debug->recovery_candidate_reject=d.recovery_candidate_reject;
+          debug->recovery_prefix_span=d.recovery_prefix_span;
+          debug->recovery_stopping_margin=d.recovery_stopping_margin;
+          debug->recovery_prefix_speed_cap=d.recovery_prefix_speed_cap;
+        }
+        return std::vector<LocalPathPoint>();
+      }
+      adoptOriginPlan(trial);recovery_plan_=plan;recovery_active_=true;
+      recovery_support_world_=support;
+      origin_mode_=(plan.geometry?"repaired_":"reacquired_")+origin_mode_;
+      d.origin_mode=origin_mode_;d.recovery_active=true;
+      d.recovery_reason=trial.origin_prefix_only_?"executable_recovery_prefix":
+          (plan.geometry?"geometry_execution_repair":"execution_recovery");
+      d.recovery_from_segment=plan.from;d.recovery_to_segment=plan.to;
+      d.recovery_gap=plan.gap;d.recovery_gap_time=plan.dt;d.recovery_fit_error=plan.error;
+      d.execution_repair_kind=plan.geometry?"continuous_geometry":"reacquisition";
+      if(plan.geometry){d.geometry_split_reason=plan.split_reason;
+        d.geometry_split_before=plan.split_before;d.geometry_split_after=plan.split_after;}
+      if(debug)*debug=d;
+      return path;
+    };
+    const uint64_t previous_from=recovery_plan_.from,previous_to=recovery_plan_.to;
+    if(recovery_active_) {
+      const auto next=recoverySegment(recovery_plan_.to);
+      if(!next.empty()) {
+        const auto& join=recovery_plan_.bridge.back();
+        double x,y;worldToBodyCenter(ego_now,join.x,join.y,&x,&y);
+        const double yaw=wrapAngle(join.heading-ego_now.yaw);
+        const bool reached=x*std::cos(yaw)+y*std::sin(yaw)<-0.02 && std::fabs(-x*std::sin(yaw)+y*std::cos(yaw))<0.30;
+        if(reached) {
+          recovery_active_=false;recovery_support_world_.clear();
+          recovery_fit_cache_=RecoveryFitCache();geometry_fit_cache_=RecoveryFitCache();recovery_attempt_cursor_=0;
+          if(debug)debug->recovery_reason="measured_segment_reached";
+        } else {
+          auto path=acceptRecovery(recovery_plan_,next);
+          if(!path.empty())return path;
+          if(debug)debug->recovery_reason="recovery_execution_infeasible";
+        }
+      } else if(debug)debug->recovery_candidate_reject="recovery_segment_unavailable";
+    }
+    // Keep a healthy accepted bridge fixed in world coordinates. Only a
+    // failed continuation may select another supported, unexecuted join;
+    // never skip the unresolved segment for a newer unrelated tail.
+    if(!raw_trail.empty() && raw_trail.back().segment_id &&
+       std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-recovery_started).count()<12.0) {
+      const bool replanning=recovery_active_;
+      if(debug && replanning)
+        debug->recovery_replan_trigger=debug->recovery_candidate_reject;
+      auto plans=geometryRecoveryCandidates(debug);
+      if(replanning)plans.erase(std::remove_if(plans.begin(),plans.end(),
+          [&](const RecoveryPlan& p){return p.from!=previous_from || p.to!=previous_to;}),plans.end());
+      if(plans.empty())plans=recoveryCandidates(recovery_active_?previous_from:raw_trail.back().segment_id,debug);
+      if(replanning)plans.erase(std::remove_if(plans.begin(),plans.end(),
+          [&](const RecoveryPlan& p){return p.from!=previous_from || p.to!=previous_to;}),plans.end());
+      // Do not run the full origin planner for every alternative in one timer
+      // callback. Continue with another candidate on the next control period.
+      if(!plans.empty() && std::chrono::duration<double,std::milli>(
+          std::chrono::steady_clock::now()-recovery_started).count()<12.0) {
+        const auto& plan=plans[recovery_attempt_cursor_++%plans.size()];
+        auto path=acceptRecovery(plan,recoverySegment(plan.to));
+        if(!path.empty()) {
+          if(debug)debug->recovery_replanned=replanning;
+          return path;
+        }
+        if(debug)debug->recovery_reason="recovery_execution_infeasible";
+      } else if(!plans.empty() && debug) {
+        debug->recovery_search_deferred=true;debug->recovery_reason="recovery_origin_deferred";
+      }
+    } else if(debug && !raw_trail.empty())debug->recovery_search_deferred=true;
+    auto path=buildOriginCandidate(raw_trail,raw,ego_now,debug);
+    if(recovery_active_ && !path.empty() && std::any_of(origin_history_cache_.begin(),
+        origin_history_cache_.end(),[](const HistoryPoint2D& h){return h.execution_only;})) {
+      recovery_support_world_=origin_history_cache_;
+      if(debug) {
+        debug->recovery_active=true;debug->recovery_reason="cached_execution_recovery";
+        debug->recovery_from_segment=recovery_plan_.from;debug->recovery_to_segment=recovery_plan_.to;
+        debug->recovery_gap=recovery_plan_.gap;debug->recovery_gap_time=recovery_plan_.dt;
+        debug->recovery_fit_error=recovery_plan_.error;
+        debug->execution_repair_kind=recovery_plan_.geometry?"continuous_geometry":"reacquisition";
+      }
+    }
+    if(debug && recovery_active_) {
+      debug->recovery_active=true;
+      debug->recovery_from_segment=recovery_plan_.from;debug->recovery_to_segment=recovery_plan_.to;
+      debug->recovery_gap=recovery_plan_.gap;debug->recovery_gap_time=recovery_plan_.dt;
+      debug->recovery_fit_error=recovery_plan_.error;
+      debug->execution_repair_kind=recovery_plan_.geometry?"continuous_geometry":"reacquisition";
+    }
+    return path;
   }
 
   bool stitchedDebugContext(const TrackerDebugState* debug) const {
-    if (debug == NULL) {
-      return false;
-    }
-    return debug->reference_source == "stitched_tail" ||
-           debug->reference_source == "stitched_confirmed" ||
-           debug->reference_reason == "reference_stitched_tail" ||
-           debug->reference_reason == "reference_stitched_provisional" ||
-           debug->selected_segment_source == "confirmed_tail" ||
-           debug->selected_segment_source == "stitched_confirmed";
+    return debug && (debug->reference_source=="stitched_tail" ||
+        debug->reference_source=="stitched_confirmed" ||
+        debug->reference_reason=="reference_stitched_tail" ||
+        debug->reference_reason=="reference_stitched_provisional" ||
+        debug->selected_segment_source=="confirmed_tail" ||
+        debug->selected_segment_source=="stitched_confirmed");
   }
 
   double minRequiredPreservedSuffix(const TrackerDebugState* debug) const {
@@ -5297,586 +6253,12 @@ class PathGenerator {
       const std::vector<LocalPathPoint>& candidate,
       const EgoPose2D& ego_now,
       TrackerDebugState* debug) const {
-    const ros::Time now = ego_now.stamp.isValid() ? ego_now.stamp : ros::Time::now();
-    if (!cfg_.reference_output_hysteresis_enabled) {
-      const std::string mode =
-          debug != NULL && !debug->reference_publish_mode.empty()
-              ? debug->reference_publish_mode
-              : std::string("unknown");
-      const std::string source =
-          debug != NULL && !debug->selected_segment_source.empty()
-              ? debug->selected_segment_source
-              : std::string("none");
-      std::vector<LocalPathPoint> audited = auditAndTrimLocalReference(candidate, debug, true);
-      if (debug != NULL) {
-        debug->candidate_reference_span = polylineLengthLocal(audited);
-      }
-      if (audited.empty()) {
-        // Keep publishing the last accepted world-frame path through a short
-        // candidate gap. It is transformed into the current ego frame each
-        // cycle, so this is continuous replay rather than a frozen local path.
-        std::vector<LocalPathPoint> held = publishedReferenceLocal(ego_now, true);
-        if (!held.empty()) {
-          if (debug != NULL) {
-            debug->reference_reason = "reference_hold_last_published";
-            debug->reference_publish_mode = "held_last_good";
-            debug->publisher_action = "hold_rejected_candidate";
-            debug->published_hold_age =
-                last_published_reference_stamp_.isZero()
-                    ? -1.0
-                    : std::max(0.0, (now - last_published_reference_stamp_).toSec());
-          }
-          return held;
-        }
-        return {};
-      }
-      acceptPublishedReference(localReferenceToWorld(audited, ego_now), now, mode, source, debug);
-      return audited;
-    }
-
-    if (debug != NULL) {
-      debug->candidate_reference_span = polylineLengthLocal(candidate);
-      debug->held_by_hysteresis = false;
-      debug->reference_output_growth_limited = false;
-      debug->published_suffix_preserved_ok = true;
-      debug->connector_only_publish_blocked = false;
-      debug->reference_refresh_latency = -1.0;
-      debug->stale_hold_block_reason = "none";
-      debug->suffix_extension_span = 0.0;
-      debug->suffix_extension_growth_limited = false;
-      debug->reconnected_last_good_suffix = false;
-      if (debug->join_connector_ratio < 0.0 || debug->join_connector_ratio > 1.0) {
-        debug->join_connector_ratio = 0.0;
-      }
-      debug->candidate_source = "none";
-      debug->reference_empty_reason_final = "none";
-      debug->published_span_target = 0.0;
-      debug->publisher_action = "candidate";
-      debug->published_hold_age = -1.0;
-      debug->candidate_jump_to_published = 0.0;
-      debug->published_full_valid = false;
-      debug->published_reference_mode =
-          last_published_reference_mode_.empty() ? debug->reference_publish_mode
-                                                 : last_published_reference_mode_;
-      debug->published_reference_reason = debug->reference_reason;
-      debug->hold_forced_release = false;
-      debug->shrink_limited_publish = false;
-      debug->candidate_vs_published_span_diff = 0.0;
-    }
-    if (candidate.empty()) {
-      std::vector<LocalPathPoint> held = publishedReferenceLocal(ego_now, false);
-      held = auditAndTrimLocalReference(held, debug, false);
-      if (!held.empty()) {
-        const ReferenceGeometryAudit held_audit = auditLocalReferenceFull(held);
-        if (debug != NULL) {
-          debug->reference_reason = "reference_hold_output_empty";
-          debug->reference_span = polylineLengthLocal(held);
-          debug->published_reference_span = debug->reference_span;
-          debug->published_reference_mode =
-              last_published_reference_mode_.empty() ? "held_last_good" : last_published_reference_mode_;
-          debug->published_reference_reason =
-              last_published_reference_reason_.empty() ? "reference_hold_output_empty"
-                                                       : last_published_reference_reason_;
-          debug->held_by_hysteresis = false;
-          debug->reference_hold_age =
-              last_published_reference_stamp_.isZero()
-                  ? -1.0
-                  : std::max(0.0, (now - last_published_reference_stamp_).toSec());
-          debug->reference_publish_mode =
-              last_published_reference_mode_.empty() ? "held_last_good" : last_published_reference_mode_;
-          debug->published_full_valid = held_audit.ok;
-          debug->reference_full_max_yaw_jump = held_audit.max_yaw_jump;
-          debug->reference_full_backtrack_count = held_audit.backtrack_count;
-          debug->reference_full_kappa_max = held_audit.kappa_max;
-          debug->published_span_target = debug->reference_span;
-          debug->publisher_action = "hold_empty_candidate";
-          debug->published_hold_age = debug->reference_hold_age;
-          debug->reconnected_last_good_suffix = true;
-          if (!last_published_reference_source_.empty()) {
-            debug->selected_segment_source = last_published_reference_source_;
-          }
-        }
-        return held;
-      }
-      if (debug != NULL) {
-        debug->reference_empty_reason_final = "empty_candidate_no_last_good";
-      }
-      return candidate;
-    }
-
-    std::vector<LocalPathPoint> audited_candidate =
-        auditAndTrimLocalReference(candidate, debug, true);
-    if (debug != NULL) {
-      debug->candidate_reference_span = polylineLengthLocal(audited_candidate);
-    }
-    if (audited_candidate.empty()) {
-      std::vector<LocalPathPoint> held = publishedReferenceLocal(ego_now, false);
-      held = auditAndTrimLocalReference(held, debug, false);
-      if (!held.empty()) {
-        const ReferenceGeometryAudit held_audit = auditLocalReferenceFull(held);
-        if (debug != NULL) {
-          debug->reference_reason = "reference_hold_output_full_reject";
-          debug->reference_span = polylineLengthLocal(held);
-          debug->published_reference_span = debug->reference_span;
-          debug->published_reference_mode =
-              last_published_reference_mode_.empty() ? "held_last_good" : last_published_reference_mode_;
-          debug->published_reference_reason =
-              last_published_reference_reason_.empty() ? "reference_hold_output_full_reject"
-                                                       : last_published_reference_reason_;
-          debug->held_by_hysteresis = true;
-          debug->published_full_valid = held_audit.ok;
-          debug->reference_full_max_yaw_jump = held_audit.max_yaw_jump;
-          debug->reference_full_backtrack_count = held_audit.backtrack_count;
-          debug->reference_full_kappa_max = held_audit.kappa_max;
-          debug->published_span_target = debug->reference_span;
-          debug->publisher_action = "hold_full_reject";
-          debug->reconnected_last_good_suffix = true;
-          debug->published_hold_age =
-              last_published_reference_stamp_.isZero()
-                  ? -1.0
-                  : std::max(0.0, (now - last_published_reference_stamp_).toSec());
-          if (!last_published_reference_source_.empty()) {
-            debug->selected_segment_source = last_published_reference_source_;
-          }
-        }
-        return held;
-      }
-      if (debug != NULL) {
-        debug->reference_empty_reason_final = "full_reject_no_last_good";
-      }
-      return {};
-    }
-
-    std::vector<LocalPathPoint> output_candidate = audited_candidate;
-    const double candidate_span = polylineLengthLocal(output_candidate);
-    const std::string candidate_mode =
-        debug != NULL && !debug->reference_publish_mode.empty()
-            ? debug->reference_publish_mode
-            : std::string("unknown");
-    const std::string candidate_source =
-        debug != NULL && !debug->selected_segment_source.empty()
-            ? debug->selected_segment_source
-            : std::string("none");
-    if (debug != NULL) {
-      debug->candidate_source = candidate_source;
-    }
-    const bool dynamic_candidate =
-        candidate_mode == "provisional_tail" ||
-        candidate_mode == "degraded_raw" ||
-        (debug != NULL &&
-         (debug->reference_reason == "reference_stitched_tail" ||
-          debug->reference_reason == "reference_stitched_provisional")) ||
-        candidate_source == "motion_tail" ||
-        candidate_source == "confirmed_tail" ||
-        candidate_source == "stitched_confirmed" ||
-        (debug != NULL &&
-         (debug->motion_tail_direct_publish ||
-          debug->motion_tail_promoted_to_reference ||
-          debug->motion_tail_hard_valid));
-
-    if (last_published_reference_world_.empty()) {
-      if (debug != NULL) {
-        debug->publisher_action = "accept_initial";
-      }
-      acceptPublishedReference(localReferenceToWorld(output_candidate, ego_now),
-                               now,
-                               candidate_mode,
-                               candidate_source,
-                               debug);
-      return output_candidate;
-    }
-
-    const double published_age =
-        last_published_reference_stamp_.isZero()
-            ? std::numeric_limits<double>::infinity()
-            : std::max(0.0, (now - last_published_reference_stamp_).toSec());
-    if (debug != NULL) {
-      debug->published_hold_age = std::isfinite(published_age) ? published_age : -1.0;
-    }
-
-    if (dynamic_candidate) {
-      std::vector<LocalPathPoint> smoothed_candidate = output_candidate;
-      std::vector<LocalPathPoint> previous_local = publishedReferenceLocal(ego_now, false);
-      if (!previous_local.empty()) {
-        const double full_candidate_span = polylineLengthLocal(output_candidate);
-        smoothed_candidate =
-            smoothReferenceUpdate(output_candidate, previous_local, cfg_.reference_state_update_alpha);
-        smoothed_candidate = auditAndTrimLocalReference(smoothed_candidate, debug, true);
-        if (smoothed_candidate.empty() && !output_candidate.empty()) {
-          smoothed_candidate = output_candidate;
-          if (debug != NULL) {
-            debug->published_update_mode = "smooth_bypass_candidate";
-            debug->reference_reject_full_reason = "smooth_trim_rejected_candidate";
-            debug->smooth_output_span = full_candidate_span;
-          }
-        }
-      }
-      if (!stitchedSuffixPreserved(smoothed_candidate, debug)) {
-        std::vector<LocalPathPoint> held = publishedReferenceLocal(ego_now, false);
-        held = auditAndTrimLocalReference(held, debug, false);
-        if (!held.empty()) {
-          const ReferenceGeometryAudit held_audit = auditLocalReferenceFull(held);
-          if (debug != NULL) {
-            debug->reference_reason = "reference_hold_output_connector_only_blocked";
-            debug->reference_span = polylineLengthLocal(held);
-            debug->published_reference_span = debug->reference_span;
-            debug->published_reference_mode =
-                last_published_reference_mode_.empty() ? "held_last_good" : last_published_reference_mode_;
-            debug->published_reference_reason =
-                last_published_reference_reason_.empty() ? debug->reference_reason
-                                                         : last_published_reference_reason_;
-            debug->held_by_hysteresis = true;
-            debug->publisher_action = "hold_connector_only_blocked";
-            debug->reconnected_last_good_suffix = true;
-            debug->published_hold_age = std::isfinite(published_age) ? published_age : -1.0;
-            debug->published_full_valid = held_audit.ok;
-            debug->reference_full_max_yaw_jump = held_audit.max_yaw_jump;
-            debug->reference_full_backtrack_count = held_audit.backtrack_count;
-            debug->reference_full_kappa_max = held_audit.kappa_max;
-            debug->published_span_target = debug->reference_span;
-            debug->published_update_mode = "retry_join";
-            debug->stale_hold_block_reason = "connector_only_publish_blocked";
-          }
-          return held;
-        }
-        if (debug != NULL) {
-          debug->reference_empty_reason_final = "connector_only_no_last_good";
-        }
-        return {};
-      }
-      if (!smoothed_candidate.empty()) {
-        if (debug != NULL &&
-            (debug->published_update_mode == "init" ||
-             debug->published_update_mode == "none" ||
-             debug->published_update_mode == "smooth_bypass_candidate")) {
-          debug->published_update_mode = "smooth_full_stitched";
-        }
-        std::vector<HistoryPoint2D> candidate_world =
-            localReferenceToWorld(smoothed_candidate, ego_now);
-        const ReferenceJumpMetrics candidate_jump =
-            referenceJumpMetrics(candidate_world, last_published_reference_world_);
-        if (debug != NULL) {
-          debug->publisher_action = "smooth_update";
-          if (debug->published_update_mode == "init" ||
-              debug->published_update_mode == "none") {
-            debug->published_update_mode = "smooth_full_stitched";
-          }
-          debug->reference_state_update_alpha = cfg_.reference_state_update_alpha;
-          debug->held_by_hysteresis = false;
-          debug->reference_output_growth_limited = false;
-          debug->published_hold_age = 0.0;
-          debug->published_span_target = polylineLengthLocal(smoothed_candidate);
-          debug->smooth_output_span = debug->published_span_target;
-          debug->candidate_reference_span = debug->published_span_target;
-          debug->published_span_jump =
-              std::isfinite(candidate_jump.span_jump) ? candidate_jump.span_jump : 0.0;
-          debug->published_endpoint_jump =
-              std::isfinite(candidate_jump.endpoint_jump) ? candidate_jump.endpoint_jump : 0.0;
-          debug->published_start_jump =
-              std::isfinite(candidate_jump.start_jump) ? candidate_jump.start_jump : 0.0;
-          debug->published_heading_jump =
-              std::isfinite(candidate_jump.heading_jump) ? candidate_jump.heading_jump : 0.0;
-          debug->candidate_jump_to_published =
-              std::max(debug->published_endpoint_jump,
-                       std::max(debug->published_start_jump, debug->published_span_jump));
-        }
-        pending_reference_world_.clear();
-        pending_reference_count_ = 0;
-        acceptPublishedReference(candidate_world, now, candidate_mode, candidate_source, debug);
-        return smoothed_candidate;
-      }
-    }
-
-    const double previous_span = historySpan(last_published_reference_world_);
-    const double dt_since_publish =
-        last_published_reference_stamp_.isZero()
-            ? (1.0 / 30.0)
-            : std::max(1.0 / 60.0, (now - last_published_reference_stamp_).toSec());
-    const double span_update_dt = clampValue(dt_since_publish, 1.0 / 60.0, 0.10);
-    const double allowed_growth =
-        std::max(cfg_.reference_output_min_span_growth,
-                 cfg_.reference_output_span_growth_per_sec * span_update_dt);
-    const double allowed_shrink =
-        std::max(cfg_.reference_output_min_span_growth,
-                 cfg_.reference_output_span_shrink_per_sec * span_update_dt);
-    double target_span = candidate_span;
-    bool growth_limited = false;
-    bool shrink_limited = false;
-    bool forced_dynamic_release = false;
-    if (debug != NULL) {
-      debug->candidate_vs_published_span_diff = candidate_span - previous_span;
-    }
-    if (candidate_span > previous_span + allowed_growth) {
-      target_span = previous_span + allowed_growth;
-      output_candidate = limitLocalReferenceBySpan(output_candidate, target_span);
-      const std::string previous_full_reject_reason =
-          debug != NULL ? debug->reference_reject_full_reason : std::string("none");
-      output_candidate = auditAndTrimLocalReference(output_candidate, debug, true);
-      if (debug != NULL && previous_full_reject_reason != "none" &&
-          debug->reference_reject_full_reason == "none") {
-        debug->reference_reject_full_reason = previous_full_reject_reason;
-      }
-      growth_limited = !output_candidate.empty();
-      if (debug != NULL) {
-        debug->reference_output_growth_limited = growth_limited;
-        debug->published_span_target = target_span;
-        debug->candidate_reference_span = polylineLengthLocal(output_candidate);
-      }
-      if (output_candidate.empty()) {
-        std::vector<LocalPathPoint> held = publishedReferenceLocal(ego_now, false);
-        held = auditAndTrimLocalReference(held, debug, false);
-        if (!held.empty()) {
-          if (debug != NULL) {
-            const ReferenceGeometryAudit held_audit = auditLocalReferenceFull(held);
-            debug->reference_reason = "reference_hold_output_growth_limit";
-            debug->reference_span = polylineLengthLocal(held);
-            debug->published_reference_span = debug->reference_span;
-            debug->published_reference_mode =
-                last_published_reference_mode_.empty() ? "held_last_good" : last_published_reference_mode_;
-            debug->published_reference_reason =
-                last_published_reference_reason_.empty() ? "reference_hold_output_growth_limit"
-                                                         : last_published_reference_reason_;
-            debug->held_by_hysteresis = true;
-            debug->publisher_action = "hold_growth_limit_empty";
-            debug->reconnected_last_good_suffix = true;
-            debug->published_hold_age = std::isfinite(published_age) ? published_age : -1.0;
-            debug->published_full_valid = held_audit.ok;
-            debug->reference_full_max_yaw_jump = held_audit.max_yaw_jump;
-            debug->reference_full_backtrack_count = held_audit.backtrack_count;
-            debug->reference_full_kappa_max = held_audit.kappa_max;
-            if (!last_published_reference_source_.empty()) {
-              debug->selected_segment_source = last_published_reference_source_;
-            }
-          }
-          return held;
-        }
-        if (debug != NULL) {
-          debug->reference_empty_reason_final = "growth_limit_no_last_good";
-        }
-        return {};
-      }
-    } else if (previous_span > cfg_.reference_output_min_publish_span &&
-               candidate_span + allowed_shrink < previous_span) {
-      const std::vector<HistoryPoint2D> shrink_candidate_world =
-          localReferenceToWorld(output_candidate, ego_now);
-      const ReferenceJumpMetrics shrink_jump =
-          referenceJumpMetrics(shrink_candidate_world, last_published_reference_world_);
-      const bool shrink_start_ok =
-          !std::isfinite(shrink_jump.start_jump) ||
-          shrink_jump.start_jump <= std::max(0.45, 2.0 * cfg_.reference_output_max_start_jump);
-      const bool shrink_heading_ok =
-          !std::isfinite(shrink_jump.heading_jump) ||
-          shrink_jump.heading_jump <= std::max(0.55, 2.0 * cfg_.reference_output_max_heading_jump);
-      forced_dynamic_release =
-          dynamic_candidate &&
-          std::isfinite(published_age) &&
-          published_age >= std::max(0.05, cfg_.reference_stale_hold_time) &&
-          candidate_span >= cfg_.reference_dynamic_shrink_min_span &&
-          output_candidate.size() >=
-              static_cast<size_t>(std::max(2, cfg_.reference_dynamic_shrink_min_points)) &&
-          shrink_start_ok &&
-          shrink_heading_ok;
-      if (forced_dynamic_release) {
-        shrink_limited = true;
-        if (debug != NULL) {
-          debug->reference_output_growth_limited = true;
-          debug->published_span_target = candidate_span;
-          debug->candidate_reference_span = candidate_span;
-          debug->held_by_hysteresis = false;
-          debug->hold_forced_release = true;
-          debug->shrink_limited_publish = true;
-          debug->published_span_jump =
-              std::isfinite(shrink_jump.span_jump) ? shrink_jump.span_jump : 0.0;
-          debug->published_endpoint_jump =
-              std::isfinite(shrink_jump.endpoint_jump) ? shrink_jump.endpoint_jump : 0.0;
-          debug->published_start_jump =
-              std::isfinite(shrink_jump.start_jump) ? shrink_jump.start_jump : 0.0;
-          debug->published_heading_jump =
-              std::isfinite(shrink_jump.heading_jump) ? shrink_jump.heading_jump : 0.0;
-          debug->candidate_jump_to_published =
-              std::max(debug->published_endpoint_jump,
-                       std::max(debug->published_start_jump, debug->published_span_jump));
-        }
-      } else {
-      std::vector<LocalPathPoint> held = publishedReferenceLocal(ego_now, false);
-      held = auditAndTrimLocalReference(held, debug, false);
-      if (!held.empty()) {
-        const ReferenceGeometryAudit held_audit = auditLocalReferenceFull(held);
-        if (debug != NULL) {
-          debug->reference_reason = "reference_hold_output_shrink_limit";
-          debug->reference_span = polylineLengthLocal(held);
-          debug->published_reference_span = debug->reference_span;
-          debug->published_reference_mode =
-              last_published_reference_mode_.empty() ? "held_last_good" : last_published_reference_mode_;
-          debug->published_reference_reason =
-              last_published_reference_reason_.empty() ? "reference_hold_output_shrink_limit"
-                                                       : last_published_reference_reason_;
-          debug->held_by_hysteresis = true;
-          debug->publisher_action = "hold_shrink_limit";
-          debug->reconnected_last_good_suffix = true;
-          debug->published_hold_age = std::isfinite(published_age) ? published_age : -1.0;
-          debug->published_full_valid = held_audit.ok;
-          debug->reference_full_max_yaw_jump = held_audit.max_yaw_jump;
-          debug->reference_full_backtrack_count = held_audit.backtrack_count;
-          debug->reference_full_kappa_max = held_audit.kappa_max;
-          debug->reference_output_growth_limited = true;
-          debug->published_span_target = std::max(candidate_span, previous_span - allowed_shrink);
-          debug->candidate_reference_span = candidate_span;
-          if (!last_published_reference_source_.empty()) {
-            debug->selected_segment_source = last_published_reference_source_;
-          }
-        }
-        return held;
-      }
-      }
-    } else if (debug != NULL) {
-      debug->published_span_target = target_span;
-    }
-
-    std::vector<HistoryPoint2D> candidate_world = localReferenceToWorld(output_candidate, ego_now);
-    const ReferenceJumpMetrics candidate_jump =
-        referenceJumpMetrics(candidate_world, last_published_reference_world_);
-    if (debug != NULL) {
-      debug->published_span_jump =
-          std::isfinite(candidate_jump.span_jump) ? candidate_jump.span_jump : 0.0;
-      debug->published_endpoint_jump =
-          std::isfinite(candidate_jump.endpoint_jump) ? candidate_jump.endpoint_jump : 0.0;
-      debug->published_start_jump =
-          std::isfinite(candidate_jump.start_jump) ? candidate_jump.start_jump : 0.0;
-      debug->published_heading_jump =
-          std::isfinite(candidate_jump.heading_jump) ? candidate_jump.heading_jump : 0.0;
-      debug->candidate_jump_to_published =
-          std::max(debug->published_endpoint_jump,
-                   std::max(debug->published_start_jump, debug->published_span_jump));
-    }
-    const bool candidate_similar =
-        referencesSimilar(candidate_world, last_published_reference_world_);
-    const double max_hold_time =
-        std::max(cfg_.reference_output_min_hold_time, cfg_.reference_output_max_hold_time);
-    const bool hold_expired_dynamic =
-        dynamic_candidate &&
-        std::isfinite(published_age) &&
-        published_age >= std::max(0.05, max_hold_time);
-    const bool continuity_forced_ok =
-        hold_expired_dynamic &&
-        (!std::isfinite(candidate_jump.start_jump) ||
-         candidate_jump.start_jump <=
-             std::max(0.45, 2.0 * cfg_.reference_output_max_start_jump)) &&
-        (!std::isfinite(candidate_jump.heading_jump) ||
-         candidate_jump.heading_jump <=
-             std::max(0.55, 2.0 * cfg_.reference_output_max_heading_jump));
-    if ((candidate_similar &&
-         published_age >= std::max(0.05, cfg_.reference_output_min_hold_time)) ||
-        (growth_limited && candidate_similar) ||
-        continuity_forced_ok) {
-      pending_reference_world_.clear();
-      pending_reference_count_ = 0;
-      if (debug != NULL) {
-        debug->publisher_action =
-            forced_dynamic_release
-                ? "force_dynamic_shrink_after_hold" :
-            (continuity_forced_ok && !candidate_similar
-                ? "force_dynamic_candidate_after_hold"
-                : ((growth_limited || shrink_limited) ? "accept_growth_limited" : "accept_candidate"));
-        debug->hold_forced_release =
-            debug->hold_forced_release || forced_dynamic_release || continuity_forced_ok;
-        debug->shrink_limited_publish = debug->shrink_limited_publish || shrink_limited;
-      }
-      acceptPublishedReference(candidate_world, now, candidate_mode, candidate_source, debug);
-      return output_candidate;
-    }
-
-    if (!pending_reference_world_.empty() &&
-        candidate_mode == pending_reference_mode_ &&
-        referencesSimilar(candidate_world, pending_reference_world_)) {
-      ++pending_reference_count_;
-    } else {
-      pending_reference_world_ = candidate_world;
-      pending_reference_mode_ = candidate_mode;
-      pending_reference_source_ = candidate_source;
-      pending_reference_count_ = 1;
-    }
-
-    const bool dynamic_suffix_preserved =
-        dynamic_candidate &&
-        debug != NULL &&
-        debug->splice_preserved_suffix_span >=
-            std::max(cfg_.reference_min_suffix_preserve_span, 0.35);
-    const bool dynamic_forced_publish =
-        dynamic_suffix_preserved &&
-        std::isfinite(published_age) &&
-        published_age >= std::max(0.05, cfg_.reference_output_max_hold_time) &&
-        (!std::isfinite(candidate_jump.start_jump) ||
-         candidate_jump.start_jump <=
-             std::max(0.45, 2.0 * cfg_.reference_output_max_start_jump)) &&
-        (!std::isfinite(candidate_jump.heading_jump) ||
-         candidate_jump.heading_jump <=
-             std::max(0.55, 2.0 * cfg_.reference_output_max_heading_jump));
-    if (dynamic_forced_publish) {
-      if (debug != NULL) {
-        debug->publisher_action = "force_dynamic_suffix_after_hold";
-        debug->hold_forced_release = true;
-        debug->held_by_hysteresis = false;
-      }
-      acceptPublishedReference(candidate_world, now, candidate_mode, candidate_source, debug);
-      pending_reference_world_.clear();
-      pending_reference_count_ = 0;
-      return output_candidate;
-    }
-
-    if (pending_reference_count_ >= std::max(1, cfg_.reference_output_confirm_frames) &&
-        published_age >= std::max(0.05, cfg_.reference_output_min_hold_time) &&
-        (candidate_similar || (dynamic_candidate && growth_limited) || continuity_forced_ok)) {
-      if (debug != NULL) {
-        debug->publisher_action =
-            forced_dynamic_release ? "force_confirmed_dynamic_shrink" :
-            (candidate_similar ? "accept_confirmed_candidate" : "accept_confirmed_dynamic_candidate");
-        debug->hold_forced_release =
-            debug->hold_forced_release || forced_dynamic_release || continuity_forced_ok;
-        debug->shrink_limited_publish = debug->shrink_limited_publish || shrink_limited;
-      }
-      acceptPublishedReference(candidate_world, now, candidate_mode, candidate_source, debug);
-      pending_reference_world_.clear();
-      pending_reference_count_ = 0;
-      return output_candidate;
-    }
-
-    std::vector<LocalPathPoint> held = publishedReferenceLocal(ego_now, false);
-    held = auditAndTrimLocalReference(held, debug, false);
-    if (!held.empty()) {
-      const ReferenceGeometryAudit held_audit = auditLocalReferenceFull(held);
-      if (debug != NULL) {
-        debug->reference_reason = "reference_hold_output_hysteresis";
-        debug->reference_span = polylineLengthLocal(held);
-        debug->published_reference_span = debug->reference_span;
-        debug->published_reference_mode =
-            last_published_reference_mode_.empty() ? "held_last_good" : last_published_reference_mode_;
-        debug->published_reference_reason =
-            last_published_reference_reason_.empty() ? "reference_hold_output_hysteresis"
-                                                     : last_published_reference_reason_;
-        debug->held_by_hysteresis = true;
-        debug->reference_hold_age = published_age;
-        debug->publisher_action = "hold_hysteresis";
-        debug->reconnected_last_good_suffix = true;
-        debug->published_hold_age = published_age;
-        debug->reference_publish_mode =
-            last_published_reference_mode_.empty() ? "held_last_good" : last_published_reference_mode_;
-        debug->published_full_valid = held_audit.ok;
-        debug->reference_full_max_yaw_jump = held_audit.max_yaw_jump;
-        debug->reference_full_backtrack_count = held_audit.backtrack_count;
-        debug->reference_full_kappa_max = held_audit.kappa_max;
-        debug->published_span_target = debug->reference_span;
-        if (!last_published_reference_source_.empty()) {
-          debug->selected_segment_source = last_published_reference_source_;
-        }
-      }
-      return held;
-    }
-
-    if (debug != NULL) {
-      debug->reference_empty_reason_final = "hysteresis_no_last_good";
-    }
-    return {};
+    if(candidate.empty())return {};
+    if(!candidate.front().analytic_geometry)return {};
+    const std::string mode=debug && debug->origin_cached ? "held_last_good" : "ready";
+    acceptPublishedReference(localReferenceToWorld(candidate,ego_now),ego_now.stamp,
+                             mode,"stitched_tail",debug);
+    return candidate;
   }
 
   void finalizePublishedReferenceDebug(const std::vector<LocalPathPoint>& published,
@@ -5913,6 +6295,19 @@ class PathGenerator {
       return;
     }
 
+    if(published.front().analytic_geometry) {
+      const std::string mode=debug->origin_cached?"held_last_good":"ready";
+      debug->actual_published_mode=mode;debug->actual_published_reason=debug->reference_reason;
+      debug->published_reference_span=debug->actual_published_span;
+      debug->published_reference_mode=mode;debug->published_reference_reason=debug->reference_reason;
+      debug->published_geometry_valid=true;debug->published_full_valid=true;debug->full_audit_hard_valid=true;
+      debug->full_audit_kappa_limited=false;debug->held_by_hysteresis=false;
+      debug->reference_health_score=1.;
+      debug->reference_stale=debug->accepted_source_age>cfg_.reference_stale_hold_time;
+      debug->published_stale_age=debug->reference_stale?debug->accepted_source_age:0.;
+      debug->reference_freshness_state=debug->reference_stale?"stale_reconnected":"fresh";
+      return;
+    }
     const ReferenceGeometryAudit audit = auditLocalReferenceFull(published);
     const std::string mode =
         !debug->published_reference_mode.empty() && debug->published_reference_mode != "init"
@@ -7152,7 +7547,7 @@ class PathGenerator {
     for (size_t i = 0; i < ref.size(); ++i) {
       HistoryPoint2D pt;
       pt.stamp = ego_now.stamp;
-      transformLocalToWorld(ego_now, ref[i].x, ref[i].y, &pt.x, &pt.y);
+      bodyCenterToWorld(ego_now, ref[i].x, ref[i].y, &pt.x, &pt.y);
       pt.heading = wrapAngle(ref[i].yaw + ego_now.yaw);
       pt.curvature = ref[i].kappa;
       pt.speed = ref[i].v_ref;
@@ -7172,7 +7567,7 @@ class PathGenerator {
     for (size_t i = 0; i < local.size(); ++i) {
       HistoryPoint2D pt;
       pt.stamp = ego_now.stamp;
-      transformLocalToWorld(ego_now, local[i].x, local[i].y, &pt.x, &pt.y);
+      bodyCenterToWorld(ego_now, local[i].x, local[i].y, &pt.x, &pt.y);
       pt.heading = wrapAngle(local[i].yaw + ego_now.yaw);
       pt.curvature = local[i].curvature;
       pt.speed = 0.0;
@@ -7190,7 +7585,7 @@ class PathGenerator {
     for (size_t i = 0; i < local.size(); ++i) {
       HistoryPoint2D pt;
       pt.stamp = stamp;
-      transformLocalToWorld(ego_now, local[i].x, local[i].y, &pt.x, &pt.y);
+      bodyCenterToWorld(ego_now, local[i].x, local[i].y, &pt.x, &pt.y);
       pt.heading = wrapAngle(local[i].yaw + ego_now.yaw);
       pt.curvature = local[i].curvature;
       pt.speed = 0.0;
@@ -7256,7 +7651,7 @@ class PathGenerator {
             : referenceJumpMetrics(world, last_published_reference_world_);
     const ros::Time publish_stamp = stamp.isValid() ? stamp : ros::Time::now();
     const HistoryPoint2D& endpoint = world.back();
-    const ros::Time endpoint_source_stamp = current_candidate_source_stamp_;
+    const ros::Time endpoint_source_stamp = current_geometry_source_stamp_;
     const bool endpoint_source_valid = endpoint_source_stamp.isValid();
     const double endpoint_move =
         last_published_endpoint_valid_
@@ -7403,6 +7798,28 @@ class PathGenerator {
   mutable ros::Time last_published_endpoint_source_stamp_;
   mutable ros::Time last_published_endpoint_progress_stamp_;
   mutable ros::Time current_candidate_source_stamp_;
+  mutable ros::Time current_geometry_source_stamp_;
+  mutable std::vector<HistoryPoint2D> origin_history_cache_;
+  mutable std::vector<HistoryPoint2D> recovery_observed_world_,recovery_support_world_;
+  mutable GeometrySplit geometry_split_;
+  mutable RecoveryPlan recovery_plan_;
+  mutable RecoveryFitCache recovery_fit_cache_,geometry_fit_cache_;
+  mutable size_t recovery_attempt_cursor_=0;
+  mutable bool recovery_active_=false;
+  mutable ros::Time origin_history_cache_stamp_;
+  mutable ros::Time origin_previous_stamp_;
+  mutable double origin_previous_delta_ = 0.;
+  mutable bool origin_approaching_ = true;
+  mutable bool origin_approach_provisional_ = false;
+  mutable bool origin_prefix_only_ = false;
+  mutable double origin_fit_length_ = 0.10,origin_fit_limit_ = 0.015;
+  mutable double origin_rate_cap_ = 0.;
+  mutable double origin_return_length_ = 0.;
+  mutable std::vector<HistoryPoint2D> origin_approach_world_;
+  mutable std::vector<HistoryPoint2D> origin_previous_plan_world_;
+  mutable double origin_residual_ = 0.;
+  mutable std::string origin_mode_ = "unavailable";
+  mutable std::string origin_reject_ = "none";
   mutable uint64_t reference_update_seq_ = 0;
   mutable std::vector<HistoryPoint2D> pending_reference_world_;
   mutable std::string pending_reference_mode_;
@@ -7500,6 +7917,7 @@ class FixedFrameTrajectoryReconstructor {
       final_traj_log_stream_ << "timestamp,x,y,yaw\n";
       final_traj_log_stream_.flush();
     }
+    initializeOriginLogs();
     initializeRuntimeDebugLog();
     initializeLegacyDebugLogs();
 
@@ -7520,6 +7938,111 @@ class FixedFrameTrajectoryReconstructor {
   }
 
  private:
+  void initializeOriginLogs() {
+    if(!enable_debug_csv_logs_)return;
+    mkdir(debug_log_dir_.c_str(),0775);
+    origin_run_id_=std::to_string(ros::WallTime::now().toNSec());
+    origin_summary_log_.open(debugFilePath("origin_reference_"+origin_run_id_+".csv").c_str());
+    origin_points_log_.open(debugFilePath("origin_points_"+origin_run_id_+".csv").c_str());
+    origin_input_log_.open(debugFilePath("origin_observations_"+origin_run_id_+".csv").c_str());
+    origin_summary_log_<<"run_id,stamp,pose_stamp,query_dt,rear_x,rear_y,body_yaw,delta,speed,"
+        "history_points,reference_points,source_stamp,source_age,mode,reject,join_s,join_length,"
+        "residual,historical_ey,historical_yaw,rate_speed_cap,coordinate_kappa_max,compute_ms,history_action,execution_fit_adjust,history_supported,"
+        "selected_remaining,candidate_source_stamp,candidate_reject,using_history_cache,history_cache_age,code_revision,"
+        "projection_along,initial_center_kappa,longest_feasible_prefix,steer_rejects,initial_steer_rejects,"
+        "short_prefix_rejects,projection_rejects,coordinate_fit_length,prefix_only,track_vx,track_vy,estimator_active,"
+        "recovery_active,recovery_reason,recovery_from_segment,recovery_to_segment,recovery_gap,recovery_gap_time,recovery_fit_error,"
+        "geometry_split_reason,geometry_split_before,geometry_split_after,execution_repair_kind,"
+        "recovery_candidate_reject,recovery_replan_trigger,recovery_replanned,recovery_prefix_span,"
+        "recovery_stopping_margin,recovery_prefix_speed_cap,recovery_search_trials,recovery_candidates,"
+        "recovery_origin_attempts,recovery_steer_rejects,recovery_rate_rejects,recovery_shape_rejects,"
+        "recovery_context_span,recovery_search_cached,recovery_search_deferred,estimator_x,estimator_y,estimator_stamp,"
+        "innovation_norm,innovation_metric,innovation_observation_stamp,innovation_pending,innovation_reestimates,innovation_reestimate_stamp\n";
+    origin_points_log_<<"run_id,stamp,kind,index,source_stamp,source_id,source_end_id,source_fraction,"
+        "segment_id,history_s,world_x,world_y,center_x,center_y,yaw,kappa,predicted,observation_support_start\n";
+    origin_input_log_<<"run_id,receipt_stamp,observation_stamp,index,raw_x,raw_y,raw_z,qx,qy,qz,qw,"
+        "pose_valid,pose_stamp,query_dt,rear_x,rear_y,body_yaw,projected,selected_world_x,selected_world_y,reason\n";
+  }
+
+  void logOriginObservation(const geometry_msgs::PoseArray& msg,const ros::Time& stamp,
+      const EgoPose2D& pose,const LeadObservation& obs,bool projected) {
+    if(!origin_input_log_)return;
+    const double missing=std::numeric_limits<double>::quiet_NaN();
+    const geometry_msgs::Pose empty;
+    for(size_t i=0;i<std::max<size_t>(1,msg.poses.size());++i) {
+      const bool absent=msg.poses.empty();
+      const auto& p=absent?empty:msg.poses[i];
+      origin_input_log_<<std::fixed<<std::setprecision(9)<<origin_run_id_<<","
+          <<ros::Time::now().toSec()<<","<<stamp.toSec()<<","<<(absent?-1:static_cast<int>(i))<<","
+          <<(absent?missing:p.position.x)<<","<<(absent?missing:p.position.y)<<","<<(absent?missing:p.position.z)<<","
+          <<(absent?missing:p.orientation.x)<<","<<(absent?missing:p.orientation.y)<<","
+          <<(absent?missing:p.orientation.z)<<","<<(absent?missing:p.orientation.w)<<","
+          <<(!pose.stamp.isZero()?1:0)<<","<<pose.stamp.toSec()<<","
+          <<(!pose.stamp.isZero()?(pose.stamp-stamp).toSec():missing)<<","
+          <<pose.x<<","<<pose.y<<","<<pose.yaw<<","<<(projected?1:0)<<","
+          <<(projected?obs.world_x:missing)<<","<<(projected?obs.world_y:missing)<<","
+          <<debug_state_.projector_reason<<"\n";
+    }
+  }
+
+  void logOriginPath(const ros::Time& now,const EgoPose2D& pose,
+      const std::vector<HistoryPoint2D>& history,const std::vector<LocalPathPoint>& reference) {
+    if(!origin_summary_log_)return;
+    const auto& d=debug_state_;
+    const double source=path_generator_.acceptedSourceStamp().toSec();
+    origin_summary_log_<<std::fixed<<std::setprecision(9)<<origin_run_id_<<","<<now.toSec()<<","
+        <<pose.stamp.toSec()<<","<<(!pose.stamp.isZero()?(pose.stamp-now).toSec():
+            std::numeric_limits<double>::quiet_NaN())<<","
+        <<pose.x<<","<<pose.y<<","<<pose.yaw<<","<<pose.delta<<","<<pose.v<<","
+        <<history.size()<<","<<reference.size()<<","<<source<<","
+        <<(source>0.?now.toSec()-source:-1.)<<","<<d.origin_mode<<","<<d.origin_reject<<","
+        <<d.join_state_s<<","<<d.connector_span<<","<<d.origin_residual<<","
+        <<d.origin_history_error<<","<<d.origin_history_yaw<<","<<d.origin_rate_cap<<","
+        <<d.reference_full_kappa_max<<","<<d.reconstruction_compute_ms<<","<<d.history_reason<<","<<d.origin_fit_adjust<<","<<(d.origin_history_supported?1:0)<<","
+        <<d.origin_remaining<<","<<d.origin_candidate_stamp<<","<<d.origin_candidate_reject<<","
+        <<(d.origin_cached?1:0)<<","<<d.origin_cache_age<<",history_continuity_20261019_r6,"
+        <<d.origin_along<<","<<d.origin_initial_kappa<<","<<d.origin_longest_prefix<<","
+        <<d.origin_steer_rejects<<","<<d.origin_initial_rejects<<","<<d.origin_short_prefixes<<","
+        <<d.origin_projection_rejects<<","<<d.origin_fit_length<<","<<(d.origin_prefix_only?1:0)<<","
+        <<tracker_.track().vx<<","<<tracker_.track().vy<<","<<(tracker_.hasActiveTrack()?1:0)<<","
+        <<(d.recovery_active?1:0)<<","<<d.recovery_reason<<","<<d.recovery_from_segment<<","
+        <<d.recovery_to_segment<<","<<d.recovery_gap<<","<<d.recovery_gap_time<<","<<d.recovery_fit_error<<","
+        <<d.geometry_split_reason<<","<<d.geometry_split_before<<","<<d.geometry_split_after<<","
+        <<d.execution_repair_kind<<","<<d.recovery_candidate_reject<<","<<d.recovery_replan_trigger<<","
+        <<(d.recovery_replanned?1:0)<<","<<d.recovery_prefix_span<<","<<d.recovery_stopping_margin<<","
+        <<d.recovery_prefix_speed_cap<<","<<d.recovery_search_trials<<","<<d.recovery_candidates<<","
+        <<d.recovery_origin_attempts<<","<<d.recovery_steer_rejects<<","<<d.recovery_rate_rejects<<","
+        <<d.recovery_shape_rejects<<","<<d.recovery_context_span<<","<<(d.recovery_search_cached?1:0)<<","
+        <<(d.recovery_search_deferred?1:0)<<","<<tracker_.track().x<<","<<tracker_.track().y<<","
+        <<tracker_.track().stamp.toSec()<<","<<tracker_.innovationNorm()<<","<<tracker_.innovationMetric()<<","
+        <<tracker_.innovationObservationStamp().toSec()<<","<<tracker_.pendingInnovationCount()<<","
+        <<tracker_.innovationReestimates()<<","<<tracker_.lastInnovationReestimate().toSec()<<"\n";
+    if(++origin_log_cycle_%3==0 && !pose.stamp.isZero()) {
+      for(size_t i=0;i<history.size();++i) {
+        const auto& h=history[i];double x,y;worldToBodyCenter(pose,h.x,h.y,&x,&y);
+        origin_points_log_<<std::fixed<<std::setprecision(9)<<origin_run_id_<<","<<now.toSec()
+            <<",history,"<<i<<","<<h.stamp.toSec()<<","<<h.source_id<<","<<h.source_end_id<<","
+            <<h.source_fraction<<","<<h.segment_id<<","<<h.history_s<<","
+            <<h.x<<","<<h.y<<","<<x<<","<<y<<","<<h.heading<<","<<h.curvature<<","
+            <<(h.predicted?1:0)<<","<<h.observation_support_start.toSec()<<"\n";
+      }
+      for(size_t i=0;i<reference.size();++i) {
+        const auto& p=reference[i];double x,y;bodyCenterToWorld(pose,p.x,p.y,&x,&y);
+        origin_points_log_<<std::fixed<<std::setprecision(9)<<origin_run_id_<<","<<now.toSec()
+            <<",execution,"<<i<<","<<source<<",0,0,0,0,0,"<<x<<","<<y<<","
+            <<p.x<<","<<p.y<<","<<p.yaw<<","<<p.curvature<<",0,0\n";
+      }
+      const auto& recovery=path_generator_.recoverySupportForDebug();
+      for(size_t i=0;i<recovery.size();++i)if(d.recovery_active && recovery[i].execution_only) {
+        const auto& h=recovery[i];double x,y;worldToBodyCenter(pose,h.x,h.y,&x,&y);
+        origin_points_log_<<std::fixed<<std::setprecision(9)<<origin_run_id_<<","<<now.toSec()
+            <<",recovery_support,"<<i<<",0,0,0,0,0,0,"<<h.x<<","<<h.y<<","
+            <<x<<","<<y<<","<<h.heading<<","<<h.curvature<<",1,0\n";
+      }
+    }
+    if(origin_log_cycle_%30==0){origin_summary_log_.flush();origin_points_log_.flush();origin_input_log_.flush();}
+  }
+
   void initializeRuntimeDebugLog() {
     if (!enable_debug_csv_logs_) {
       return;
@@ -8040,6 +8563,11 @@ class FixedFrameTrajectoryReconstructor {
        << " suffix_span=" << debug.suffix_span
        << " stitched_span=" << debug.stitched_span
        << " raw_direct_publish=" << (debug.raw_direct_publish ? 1 : 0)
+       << " origin_mode=" << debug.origin_mode
+       << " origin_reject=" << debug.origin_reject
+       << " origin_rate_cap=" << debug.origin_rate_cap
+       << " origin_residual=" << debug.origin_residual
+       << " geometry_stamp=" << now.toSec()
        << " reference_connector_to_target=0"
        << " stamp=" << now.toSec();
     msg.data = ss.str();
@@ -8842,6 +9370,10 @@ class FixedFrameTrajectoryReconstructor {
 
   PathGenerator::Config loadPathConfig() const {
     PathGenerator::Config cfg;
+    cfg.reference_measurement_sigma=pnh_.param("measurement_cross_sigma",0.12);
+    cfg.recovery_lost_timeout=pnh_.param("lost_timeout",0.60);
+    cfg.recovery_max_distance=pnh_.param("target_lock_dist_gate",1.20);
+    cfg.recovery_max_speed=pnh_.param("lead_tail_max_speed",0.60);
     cfg.raw_resample_ds = pnh_.param("raw_resample_ds", 0.08);
     cfg.raw_fit_ds = pnh_.param("raw_fit_ds", 0.06);
     cfg.raw_spline_passes = pnh_.param("raw_spline_passes", 4);
@@ -9070,7 +9602,11 @@ class FixedFrameTrajectoryReconstructor {
     LeadObservation obs;
     EgoPose2D ego_at_obs;
     const LeadState2D* track_ptr = tracker_.hasActiveTrack() ? &tracker_.track() : NULL;
-    if (!projector_.project(*msg, ego_motion_, track_ptr, &obs, &ego_at_obs, &debug_state_)) {
+    geometry_msgs::PoseArray stamped=*msg;
+    stamped.header.stamp=obs_stamp;
+    const bool projected=projector_.project(stamped,ego_motion_,track_ptr,&obs,&ego_at_obs,&debug_state_);
+    logOriginObservation(*msg,obs_stamp,ego_at_obs,obs,projected);
+    if (!projected) {
       ++obs_version_;
       debug_state_.history_size = tracker_.worldHistoryForPublish(obs_stamp).size();
       fillEgoDebug(obs_stamp, NULL);
@@ -9120,7 +9656,34 @@ class FixedFrameTrajectoryReconstructor {
       tracker_.pruneHistory(now);
 
       EgoPose2D ego_now;
+      debug_state_.origin_mode="unavailable";debug_state_.origin_reject="ego_pose_unavailable";
+      debug_state_.origin_rate_cap=0.;debug_state_.origin_residual=0.;
+      debug_state_.origin_fit_adjust=0.;debug_state_.origin_history_supported=false;
+      debug_state_.origin_remaining=0.;debug_state_.origin_candidate_stamp=0.;
+      debug_state_.origin_candidate_reject="none";debug_state_.origin_cached=false;
+      debug_state_.origin_cache_age=-1.;
+      debug_state_.origin_along=0.;debug_state_.origin_initial_kappa=0.;debug_state_.origin_longest_prefix=0.;
+      debug_state_.origin_steer_rejects=0;debug_state_.origin_initial_rejects=0;
+      debug_state_.origin_short_prefixes=0;debug_state_.origin_projection_rejects=0;
+      debug_state_.origin_prefix_only=false;debug_state_.origin_fit_length=0.10;
+      debug_state_.recovery_active=false;debug_state_.recovery_reason="none";
+      debug_state_.recovery_from_segment=debug_state_.recovery_to_segment=0;
+      debug_state_.recovery_gap=debug_state_.recovery_gap_time=debug_state_.recovery_fit_error=0.;
+      debug_state_.recovery_candidate_reject=debug_state_.recovery_replan_trigger="none";
+      debug_state_.recovery_prefix_span=debug_state_.recovery_stopping_margin=debug_state_.recovery_prefix_speed_cap=0.;
+      debug_state_.recovery_replanned=false;
+      debug_state_.recovery_search_trials=debug_state_.recovery_candidates=debug_state_.recovery_origin_attempts=0;
+      debug_state_.recovery_steer_rejects=debug_state_.recovery_rate_rejects=debug_state_.recovery_shape_rejects=0;
+      debug_state_.recovery_context_span=0.;debug_state_.recovery_search_cached=debug_state_.recovery_search_deferred=false;
+      debug_state_.geometry_split_reason=debug_state_.execution_repair_kind="none";
+      debug_state_.geometry_split_before=debug_state_.geometry_split_after=0.;
+      debug_state_.stable_segment_count=0;debug_state_.selected_segment_span=0.;
+      debug_state_.selected_segment_score=0.;debug_state_.candidate_block_reason="none";
+      debug_state_.reference_empty_reason_final="none";
+      debug_state_.origin_history_error=std::numeric_limits<double>::quiet_NaN();
+      debug_state_.origin_history_yaw=std::numeric_limits<double>::quiet_NaN();
       if (ego_motion_.queryPoseAt(now, &ego_now)) {
+        tracker_.updateFollowerProgress(ego_now);
         world_history = tracker_.worldHistoryForPublish(now);
         reference_history = tracker_.referenceHistoryForPublish(now, &debug_state_);
         if (reference_history.empty()) {
@@ -9128,7 +9691,7 @@ class FixedFrameTrajectoryReconstructor {
         }
         debug_state_.history_size = reference_history.size();
         const std::vector<RawTrailPoint> raw_trail =
-            path_generator_.buildRawTrail(reference_history, &debug_state_);
+            path_generator_.buildRawTrail(reference_history, &debug_state_, &ego_now);
         raw_pts = path_generator_.buildRawPath(reference_history, ego_now, &debug_state_);
         ref_pts = path_generator_.buildReferencePath(raw_trail, raw_pts, ego_now, &debug_state_);
         if ((debug_state_.reference_publish_mode == "ready" ||
@@ -9185,6 +9748,7 @@ class FixedFrameTrajectoryReconstructor {
       ego_standstill = std::fabs(speed) < min_motion_speed_for_yaw_ * 0.9;
       debug_state_.reconstruction_compute_ms =
           (ros::WallTime::now() - compute_start).toSec() * 1000.0;
+      logOriginPath(now,ego_now,reference_history,ref_pts);
       debug_snapshot = debug_state_;
     }
 
@@ -9341,6 +9905,9 @@ class FixedFrameTrajectoryReconstructor {
   bool enable_debug_csv_logs_ = true;
   std::ofstream final_traj_log_stream_;
   std::ofstream runtime_debug_stream_;
+  std::ofstream origin_summary_log_,origin_points_log_,origin_input_log_;
+  std::string origin_run_id_;
+  uint64_t origin_log_cycle_=0;
   std::ofstream history_relative_stream_;
   std::ofstream history_status_stream_;
   std::ofstream lead_filter_stream_;
@@ -9367,6 +9934,7 @@ class FixedFrameTrajectoryReconstructor {
 
 int main(int argc, char** argv) {
   ros::init(argc, argv, "trajectory_reconstructor");
+  ROS_INFO("trajectory_reconstructor history_continuity_20261019_r6 built %s %s",__DATE__,__TIME__);
   FixedFrameTrajectoryReconstructor node;
   ros::spin();
   return 0;

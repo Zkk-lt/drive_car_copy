@@ -208,7 +208,7 @@
     <param name="provisional_tail_short_min_time" value="0.10"/>
     <param name="provisional_tail_max_age" value="1.50"/>
     <param name="provisional_tail_standalone_until_confirmed_points" value="8"/>
-    <param name="motion_tail_force_publish_stall" value="0.10"/>
+    <param name="motion_tail_force_publish_stall" value="0.15"/>
     <param name="motion_static_suppress_speed" value="0.035"/>
     <param name="motion_static_suppress_progress" value="0.015"/>
     <param name="motion_static_suppress_residual" value="0.050"/>
@@ -243,9 +243,9 @@
     <param name="tail_soft_geometry_enabled" value="true"/>
     <param name="confirm_dynamic_score_margin" value="0.08"/>
     <param name="confirm_static_residual_gate" value="0.14"/>
-    <param name="confirm_min_progress" value="0.02"/>
-    <param name="confirm_accum_distance" value="0.015"/>
-    <param name="confirm_accum_timeout" value="0.20"/>
+    <param name="confirm_min_progress" value="0.03"/>
+    <param name="confirm_accum_distance" value="0.025"/>
+    <param name="confirm_accum_timeout" value="0.35"/>
     <param name="ego_static_speed_gate" value="0.05"/>
     <param name="static_release_score_margin" value="0.06"/>
     <param name="raw_tail_keep_points" value="6"/>

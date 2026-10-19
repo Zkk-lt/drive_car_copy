@@ -1,0 +1,34 @@
+# Diagnostic-only history. No point in this message is an approach connector.
+std_msgs/Header header
+time epoch
+string base_frame
+bool ego_valid
+time ego_stamp
+geometry_msgs/Pose ego_pose
+geometry_msgs/Twist ego_motion
+string ego_pose_source
+time imu_source_stamp
+time observation_source_stamp
+time observation_pose_stamp
+uint64 active_segment_id
+bool progress_acquired
+float64 progress_s
+float64 progress_rear_offset
+string ledger_status
+uint32 retained_points
+uint32 trimmed_passed_points
+uint64 last_trimmed_id
+uint32 overlap_skipped
+float64 overlap_drift_max
+float64 discarded_candidate_prefix_span
+# Boundary belongs to this cycle's candidate, NOT a held published reference.
+int32 candidate_connector_end_index
+float64 candidate_connector_end_s
+string candidate_reason
+bool candidate_accepted
+float64 history_projection_source_stamp
+bool candidate_same_history_valid
+float64 candidate_same_history_displacement
+float64 candidate_same_history_lateral_change
+float64 candidate_same_history_heading_change
+HistoryTrackingPoint[] points

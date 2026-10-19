@@ -114,7 +114,15 @@ struct PathPoint {
     bool pose_yaw_valid = false;
 };
 
+struct TrackingPose {
+    ros::Time stamp;
+    double x=0.,y=0.,yaw=0.;
+};
+
 struct PathBuffer {
+    TrackingPose publication_pose;
+    bool publication_pose_valid=false;
+    double pose_query_dt=0.;
     ros::Time stamp;
     std::vector<PathPoint> points;
     bool valid = false;
@@ -126,6 +134,21 @@ struct PathBuffer {
     double turn_blend = 0.0;
     std::string segment_mode = "raw";
 };
+
+PathBuffer transportCenterPath(const PathBuffer& path,const TrackingPose& current) {
+    PathBuffer out=path;
+    const TrackingPose& source=path.publication_pose;
+    const double cs=std::cos(source.yaw),ss=std::sin(source.yaw);
+    const double cc=std::cos(current.yaw),sc=std::sin(current.yaw);
+    for(PathPoint& p:out.points) {
+        const double x=source.x+cs*(p.x+0.30)-ss*p.y-current.x;
+        const double y=source.y+ss*(p.x+0.30)+cs*p.y-current.y;
+        p.x=cc*x+sc*y-0.30;p.y=-sc*x+cc*y;
+        p.yaw=wrapAngle(p.yaw+source.yaw-current.yaw);
+    }
+    out.publication_pose=current;
+    return out;
+}
 
 struct PathTrackingProblem {
     bool valid = false;
@@ -153,6 +176,11 @@ struct ControllerDebug {
     bool emergency_stop = false;
     bool safe_stop = false;
     std::string stop_reason = "init";
+    double curve_kappa_before_quality = 0.0;
+    double curve_kappa_after_quality = 0.0;
+    double active_steer_limit = 0.0;
+    double slqr_feedback_applied = 0.0;
+    double steer_delay_requested_distance = 0.0;
     double e_y = 0.0;
     double e_theta = 0.0;
     double first_curvature = 0.0;
@@ -1199,6 +1227,7 @@ struct UnifiedTrackingSignal {
 };
 
 struct UnifiedControlOutput {
+    double slqr_feedback_applied = 0.0;
     double delta_ref = 0.0;
     double delta_ff = 0.0;
     double delta_course = 0.0;
@@ -1602,6 +1631,7 @@ private:
 };
 
 struct PreviewGeometrySignal {
+    double steer_delay_requested_distance = 0.0;
     bool valid = false;
     double lookahead = 0.0;
     double x = 0.0;
@@ -1829,7 +1859,7 @@ public:
         double nearest_front_axle_e_ct = 0.0;
         bool nearest_front_axle_valid = false;
         double nearest_front_axle_dist2 = std::numeric_limits<double>::infinity();
-        const double front_x = wheelbase_;
+        const double front_x = 0.30;
         const double front_y = 0.0;
         // Stanley error must come from the local path neighborhood. Searching the
         // full stitched suffix can select a later hairpin segment that happens to
@@ -1883,7 +1913,7 @@ public:
             dst->front_axle_e_ct =
                 nearest_front_axle_valid
                     ? nearest_front_axle_e_ct
-                    : std::sin(preview.yaw) * (preview.x - wheelbase_) -
+                    : std::sin(preview.yaw) * (preview.x - 0.30) -
                           std::cos(preview.yaw) * preview.y;
             dst->kappa_pp = clampValue(2.0 * preview.y / ld2,
                                        -kappa_pp_abs_limit_,
@@ -1902,7 +1932,8 @@ public:
             const double path_s0 = path.points.front().s;
             const double path_s1 = path.points.back().s;
             out.actuator_preview_distance = actuator_preview_distance;
-            out.steer_delay_distance = actuator_preview_time_ * std::fabs(speed);
+            out.steer_delay_requested_distance = actuator_preview_time_ * std::fabs(speed);
+            out.steer_delay_distance = actuator_preview_distance;
             out.steer_delay_comp_distance = out.steer_delay_distance;
             out.exec_probe_s = clampValue(out.steer_delay_distance,
                                           exec_probe_min_,
@@ -2327,74 +2358,16 @@ public:
                                  bool slqr_valid,
                                  bool recovery_active) const {
         UnifiedControlOutput out;
-        const double speed_abs = std::max(0.02, std::fabs(speed));
-        const double kappa = preview.valid ? preview.kappa_cmd : tracking.kappa_ref;
-        const double psi = preview.valid ? preview.psi_used : tracking.e_course;
-        const double lateral_error =
-            preview.valid && front_axle_tracking_enabled_ ? preview.front_axle_e_ct :
-            (preview.valid ? preview.cross_track_error : tracking.signed_e_y);
-        out.delta_confidence_scale = clampValue(reference_confidence, 0.25, 1.0);
-        out.lateral_gain = k_y_;
-        out.delta_ff = clampValue(std::atan(wheelbase_ * kappa),
-                                  -delta_ff_max_,
-                                  delta_ff_max_);
-        out.delta_course = clampValue(k_preview_yaw_ * psi, -yaw_delta_limit_, yaw_delta_limit_);
-        double delta_lateral =
-            -std::atan2(out.lateral_gain * lateral_error, speed_abs + k_soft_);
-        out.delta_lateral_raw = delta_lateral;
-        const double lateral_limit = recovery_active ? 0.24 : 0.18;
-        delta_lateral = clampValue(delta_lateral, -lateral_limit, lateral_limit);
-        if (!recovery_active && out.delta_ff * delta_lateral < 0.0) {
-            const double cancellation_limit = 0.05 + 0.35 * std::fabs(out.delta_ff);
-            const double guarded =
-                std::copysign(std::min(std::fabs(delta_lateral), cancellation_limit),
-                              delta_lateral);
-            out.delta_lateral_limited = std::fabs(guarded - delta_lateral) > 1e-6;
-            delta_lateral = guarded;
-        }
-        out.delta_lateral = delta_lateral;
-        out.delta_ey_rate = 0.0;
-        out.delta_yaw = k_yaw_rate_ * (speed_abs * kappa - yaw_rate) -
-                        k_feedback_ * steering_residual;
-        (void)bias;
-        const double fallback_delta = out.delta_ff +
-                                      out.delta_course +
-                                      out.delta_lateral +
-                                      out.delta_yaw;
-        const bool trusted_curve_feedforward =
-            preview.valid && preview.geometric_curve_evidence &&
-            !preview.sign_conflict && std::fabs(out.delta_ff) > 1e-4 &&
-            (std::fabs(slqr_feedforward) <= 0.25 * std::fabs(out.delta_ff) ||
-             out.delta_ff * slqr_feedforward >= 0.0);
-        if (recovery_active) {
-            // Once front-axle error is large, the executable correction must
-            // not be replaced by the stale/quality-scaled SLQR profile.  Use
-            // the same single physical closed loop, including its saturated
-            // Stanley term, so a tight bend is recovered before it is passed.
-            out.delta_unsaturated = fallback_delta;
-        } else if (slqr_valid && trusted_curve_feedforward) {
-            // SpatialSLQR already contains the feed-forward associated with
-            // its curvature profile.  Retain its feedback correction, replace
-            // only that profile feed-forward with the delay-compensated one,
-            // and keep normal tracking from reversing a trusted bend.  This
-            // avoids both double-adding feed-forward and the previous hard
-            // selection that discarded it completely.
-            double slqr_feedback = slqr_delta - slqr_feedforward;
-            if (!recovery_active && out.delta_ff * slqr_feedback < 0.0) {
-                const double cancellation_limit =
-                    std::min(0.95 * std::fabs(out.delta_ff),
-                             0.05 + 0.35 * std::fabs(out.delta_ff));
-                slqr_feedback = std::copysign(
-                    std::min(std::fabs(slqr_feedback), cancellation_limit),
-                    slqr_feedback);
-            }
-            out.delta_unsaturated = out.delta_ff + slqr_feedback;
-        } else {
-            out.delta_unsaturated = slqr_valid ? slqr_delta : fallback_delta;
-        }
-        out.delta_ref = clampValue(out.delta_unsaturated, -delta_max_, delta_max_);
-        out.delta_saturation_margin = delta_max_ - std::fabs(out.delta_ref);
-        out.slqr_weight = slqr_valid ? 1.0 : 0.0;
+        // The full SLQR result already includes its model feedforward.
+        // Recovery is diagnostic, not a second steering owner.
+        out.delta_ff=slqr_feedforward;
+        out.slqr_feedback_applied=slqr_delta-slqr_feedforward;
+        out.delta_unsaturated=slqr_delta;
+        out.delta_ref=clampValue(slqr_delta,-std::min(0.32,delta_max_),
+                                            std::min(0.32,delta_max_));
+        out.delta_saturation_margin=std::min(0.32,delta_max_)-std::fabs(out.delta_ref);
+        out.slqr_weight=1.;
+        out.delta_confidence_scale=1.;
         return out;
     }
 
@@ -2632,15 +2605,21 @@ public:
         buffer.source = source;
         buffer.held_reference = (source == "reference" && msg.header.seq == 1u);
 
+        size_t last_valid=msg.poses.size();
+        for(size_t i=msg.poses.size();i>0;--i) {
+            const auto& p=msg.poses[i-1].pose.position;
+            if(finitePoint(p.x,p.y)){last_valid=i-1;break;}
+        }
+
         for (size_t i = 0; i < msg.poses.size(); ++i) {
             const double x = msg.poses[i].pose.position.x;
             const double y = msg.poses[i].pose.position.y;
             if (!finitePoint(x, y)) {
                 continue;
             }
-            if (!buffer.points.empty() &&
-                safeHypot(x - buffer.points.back().x, y - buffer.points.back().y) < min_segment_length_) {
-                continue;
+            if (!buffer.points.empty()) {
+                const double distance=safeHypot(x-buffer.points.back().x,y-buffer.points.back().y);
+                if(distance<1e-9 || (distance<min_segment_length_ && i!=last_valid))continue;
             }
             PathPoint pt;
             pt.x = x;
@@ -2691,33 +2670,24 @@ public:
             return problem;
         }
 
-        // A reference expressed in base_link need not contain the origin.  The
-        // zero-error shortcut is valid only for a numerically exact synthetic
-        // APPROACH anchor; a projected immutable history point a few centimetres
-        // to the side must retain its real lateral and heading error.
-        const bool ego_anchored =
-            path.source == "reference" &&
-            safeHypot(path.points.front().x, path.points.front().y) <=
-                ego_anchor_origin_tolerance_ &&
-            rough_s <= ego_anchor_origin_tolerance_;
-        problem.ego_anchored = ego_anchored;
-
-        if (ego_anchored) {
-            const PathPoint& origin = path.points.front();
-            problem.e_y = 0.0;
-            // The first pose of an ego-anchored reference is by definition
-            // (x,y,yaw)=(0,0,0) in base_link.  A remote bend may affect
-            // feed-forward curvature, never the current pose error.
-            problem.e_theta = 0.0;
-            problem.projection_s = origin.s;
-            problem.nearest_distance = safeHypot(origin.x, origin.y);
-            problem.path_span = path.points.back().s - path.points.front().s;
-            problem.remaining_arc = problem.path_span;
-            problem.fit_rms = 0.0;
+        // The center-motion tangent includes sideslip; an origin anchor must
+        // not override the body heading error.
+        problem.ego_anchored = path.source == "reference" &&
+            safeHypot(path.points.front().x, path.points.front().y) < ego_anchor_origin_tolerance_;
+        if (path.source == "reference") {
+            PathPoint projection;
+            if (!interpolatePathPoint(path.points, rough_s, projection)) return problem;
+            problem.e_y = std::sin(projection.yaw)*projection.x -
+                          std::cos(projection.yaw)*projection.y;
+            problem.e_theta = wrapAngle(-projection.yaw);
+            problem.projection_s = rough_s;
+            problem.nearest_distance = safeHypot(projection.x,projection.y);
+            problem.path_span = path.points.back().s-path.points.front().s;
+            problem.remaining_arc = std::max(0.,path.points.back().s-rough_s);
             problem.fit_valid = true;
-            computeForwardLineFit(path.points, problem.projection_s, problem);
-            fillLocalCurvaturePreview(path.points, problem.projection_s, problem);
-            problem.valid = problem.curvatures.size() >= 2;
+            computeForwardLineFit(path.points,rough_s,problem);
+            fillLocalCurvaturePreview(path.points,rough_s,problem);
+            problem.valid = problem.curvatures.size()>=2;
             return problem;
         }
 
@@ -2819,43 +2789,23 @@ private:
         if (pts.size() < 3) {
             return 0.0;
         }
-        const double s0 = clampValue(query_s - local_curvature_half_window_,
-                                     pts.front().s, pts.back().s);
-        const double s1 = clampValue(query_s + local_curvature_half_window_,
-                                     pts.front().s, pts.back().s);
-        if (s1 - s0 < 0.05) {
-            return 0.0;
-        }
-        PathPoint a;
-        PathPoint b;
-        if (!interpolatePathPoint(pts, s0, a) ||
-            !interpolatePathPoint(pts, s1, b)) {
-            return 0.0;
-        }
-        return clampValue(wrapAngle(b.yaw - a.yaw) /
-                              std::max(1e-3, s1 - s0),
-                          -max_curvature_, max_curvature_);
+        auto it = std::lower_bound(pts.begin(),pts.end(),query_s,
+            [](const PathPoint& p,double s){return p.s<s;});
+        const size_t i=std::min(pts.size()-2,
+            std::max<size_t>(1,static_cast<size_t>(it-pts.begin()))-1);
+        const double length=pts[i+1].s-pts[i].s;
+        return length>1e-6 ? wrapAngle(pts[i+1].yaw-pts[i].yaw)/length : 0.;
     }
 
     void fillLocalCurvaturePreview(const std::vector<PathPoint>& pts,
-                                   double projection_s,
-                                   PathTrackingProblem& problem) const {
+                                  double projection_s,
+                                  PathTrackingProblem& problem) const {
         problem.curvatures.clear();
-        problem.curvatures.reserve(static_cast<size_t>(horizon_steps_ + 1));
-        const double max_step = std::max(0.01, smooth_max_curvature_rate_ * ds_);
-        double last_kappa = localPathCurvature(pts, projection_s);
-        problem.first_curvature = last_kappa;
-        problem.curvatures.push_back(last_kappa);
-        for (int i = 1; i <= horizon_steps_; ++i) {
-            const double query_s = clampValue(
-                projection_s + ds_ * static_cast<double>(i),
-                pts.front().s, pts.back().s);
-            double kappa = localPathCurvature(pts, query_s);
-            kappa = clampValue(kappa, last_kappa - max_step, last_kappa + max_step);
-            kappa = clampValue(kappa, -max_curvature_, max_curvature_);
-            problem.curvatures.push_back(kappa);
-            last_kappa = kappa;
+        for(int i=0;i<=horizon_steps_;++i) {
+            const double s=std::min(pts.back().s,projection_s+ds_*i);
+            problem.curvatures.push_back(localPathCurvature(pts,s));
         }
+        problem.first_curvature=problem.curvatures.front();
     }
 
     void computeForwardLineFit(const std::vector<PathPoint>& pts,
@@ -3413,7 +3363,7 @@ class FollowDistanceSupervisor {
 public:
     void configure(ros::NodeHandle& pnh) {
         enabled_ = pnh.param("follow_distance_enabled", true);
-        min_distance_ = std::max(0.0, pnh.param("follow_distance_min", 1.50));
+        min_distance_ = std::max(0.0, pnh.param("follow_distance_min", 0.50));
         target_distance_ = std::max(min_distance_, pnh.param("follow_distance_target", 1.75));
         max_distance_ = std::max(target_distance_, pnh.param("follow_distance_max", 2.00));
         catchup_start_ = std::max(max_distance_, pnh.param("follow_distance_catchup_start", 2.30));
@@ -3451,33 +3401,33 @@ public:
                                         0.0,
                                         1.0);
             const double band_cap = band_speed_cap_ * t;
-            const double lead_cap = std::max(0.0, lead_speed_est + lead_margin_ * t);
-            out.cap = clampValue(std::min(band_cap, std::max(min_moving_cap_, lead_cap)),
-                                 0.0,
-                                 max_speed);
+            out.cap = clampValue(band_cap, 0.0, max_speed);
             out.state = "close_band";
             return out;
         }
+        const double nominal_cap = clampValue(
+            lead_speed_est + gap_gain_ * (lead.distance - target_distance_),
+            min_moving_cap_, max_speed);
         if (lead.distance < catchup_start_) {
             out.state = "nominal_band";
-            out.cap = clampValue(
-                lead_speed_est + gap_gain_ * (lead.distance - target_distance_),
-                min_moving_cap_,
-                max_speed);
+            // Match the distance envelope at 2m before restoring lead-speed tracking.
+            const double t = clampValue((lead.distance - max_distance_) /
+                                            std::max(1e-3, catchup_start_ - max_distance_),
+                                        0.0, 1.0);
+            const double blend = t * t * (3.0 - 2.0 * t);
+            out.cap = (1.0 - blend) * clampValue(band_speed_cap_, 0.0, max_speed) +
+                      blend * nominal_cap;
             return out;
         }
         out.catchup_allowed = true;
         out.state = "catchup_allowed";
-        out.cap = clampValue(
-            lead_speed_est + gap_gain_ * (lead.distance - target_distance_),
-            min_moving_cap_,
-            max_speed);
+        out.cap = nominal_cap;
         return out;
     }
 
 private:
     bool enabled_ = true;
-    double min_distance_ = 1.50;
+    double min_distance_ = 0.50;
     double target_distance_ = 1.75;
     double max_distance_ = 2.00;
     double catchup_start_ = 2.30;
@@ -3547,7 +3497,10 @@ public:
         straight_steering_feedback_penalty_ =
             pnh.param("slqr_straight_steering_feedback_penalty", 2.5);
         straight_delta_ff_limit_ = pnh.param("straight_delta_ff_limit", 0.06);
+        actuator_tau_=std::max(0.05,pnh.param("tracking_actuator_tau",0.44));
+        command_rate_=std::max(0.05,pnh.param("max_steer_rate",1.0));
         last_feasible_.clear();
+        setRuntimeMode(1);
     }
 
     void setRuntimeEnvelope(double speed, double mu, double gravity) {
@@ -3565,31 +3518,64 @@ public:
                        max_steer_);
     }
 
-    // mode: 0 straight, 1 normal curve, 2 recovery.  Keeping one runtime
-    // controller avoids summing several independent steering owners.
+    // Mode changes are diagnostic only; preserve configured Riccati weights.
     void setRuntimeMode(int mode) {
-        runtime_mode_ = clampValue(mode, 0, 2);
-        straight_mode_ = runtime_mode_ == 0;
-        if (runtime_mode_ == 0) {
-            runtime_q_y_ = 10.0;
-            runtime_q_theta_ = 36.0;
-            runtime_r_delta_ = 1.5;
-            runtime_r_delta_rate_ = 18.0;
-            runtime_max_steer_ = 0.32;
-        } else if (runtime_mode_ == 2) {
-            runtime_q_y_ = 28.0;
-            runtime_q_theta_ = 36.0;
-            runtime_r_delta_ = 1.5;
-            runtime_r_delta_rate_ = 16.0;
-            runtime_max_steer_ = 0.28;
-        } else {
-            runtime_q_y_ = 18.0;
-            runtime_q_theta_ = 28.0;
-            runtime_r_delta_ = 1.2;
-            runtime_r_delta_rate_ = 12.0;
-            runtime_max_steer_ = 0.32;
+        runtime_mode_=clampValue(mode,0,2);straight_mode_=runtime_mode_==0;
+        runtime_q_y_=q_y_;runtime_q_theta_=q_theta_;
+        runtime_r_delta_=r_delta_;runtime_r_delta_rate_=r_delta_rate_;
+        runtime_max_steer_=std::min(0.32,max_steer_);
+    }
+
+    void setActuatorState(double delta,double dt) {
+        predicted_delta_=clampValue(delta,-0.32,0.32);
+        command_dt_=clampValue(dt,0.001,0.10);
+    }
+
+    using CenterState=Eigen::Matrix<double,4,1>;
+    using CenterMatrix=Eigen::Matrix<double,4,4>;
+
+    static double centerBeta(double delta,double wheelbase=0.60) {
+        return std::atan(0.30*std::tan(delta)/wheelbase);
+    }
+
+    static double betaDerivative(double delta,double wheelbase=0.60) {
+        const double t=std::tan(delta),a=0.30/wheelbase;
+        return a*(1.+t*t)/(1.+a*a*t*t);
+    }
+
+    // Rear-wheel speed, center Frenet errors, and first-order steering response.
+    static void advanceCenter(double curvature,double speed,double command,
+                              double dt,double tau,double wheelbase,
+                              CenterState& z,double& progress) {
+        const double mid_delta=command+(z[2]-command)*std::exp(-0.5*dt/tau);
+        const double kr=std::tan(mid_delta)/wheelbase;
+        auto derivative=[&](double ey,double heading) {
+            const double g=std::max(0.15,1.-curvature*ey);
+            const double sdot=speed*(std::cos(heading)-
+                0.30*kr*std::sin(heading))/g;
+            return Eigen::Vector3d(speed*(std::sin(heading)+
+                0.30*kr*std::cos(heading)),speed*kr-curvature*sdot,sdot);
+        };
+        const Eigen::Vector3d a=derivative(z[0],z[1]);
+        const Eigen::Vector3d b=derivative(z[0]+0.5*dt*a[0],z[1]+0.5*dt*a[1]);
+        z[0]+=dt*b[0];z[1]=wrapAngle(z[1]+dt*b[1]);
+        z[2]=command+(z[2]-command)*std::exp(-dt/tau);
+        z[3]=command;progress+=dt*b[2];
+    }
+
+    CenterState centerStep(CenterState z,double u,double kappa) const {
+        double distance=0.,elapsed=0.;
+        const double speed=std::max(0.05,runtime_speed_);
+        const double maximum_time=3.*ds_/speed;
+        while(distance<ds_-1e-8 && elapsed<maximum_time) {
+            const double kr=std::tan(z[2])/wheelbase_;
+            const double sdot=speed*(std::cos(z[1])-0.30*kr*std::sin(z[1]))/
+                                std::max(0.15,1.-kappa*z[0]);
+            const double dt=std::min(0.02,(ds_-distance)/std::max(0.02,sdot));
+            advanceCenter(kappa,speed,u,dt,actuator_tau_,wheelbase_,z,distance);
+            elapsed+=dt;
         }
-        runtime_max_steer_ = std::min(runtime_max_steer_, max_steer_);
+        return z;
     }
 
     double yawRateBound() const {
@@ -3630,58 +3616,108 @@ public:
                  const std::vector<double>& curvatures,
                  double previous_delta,
                  SolveInfo& info) {
-        const int n = std::max(2, std::min(static_cast<int>(curvatures.size()), horizon_steps_));
-        std::vector<double> fallback = shiftedFeasible(curvatures, n, previous_delta);
-        std::vector<Eigen::RowVector3d> gains(static_cast<size_t>(n), Eigen::RowVector3d::Zero());
-        std::vector<double> feedforward_terms(static_cast<size_t>(n), 0.0);
-        double barrier_margin = 1.0;
-        bool ok = backwardPass(curvatures, n, fallback, gains, feedforward_terms, barrier_margin);
-
-        std::vector<double> candidate = fallback;
-        if (ok) {
-            candidate = forwardPass(e_y, e_theta, curvatures, previous_delta, gains, feedforward_terms);
+        info=SolveInfo();
+        if(curvatures.size()<2) {
+            info.solver_ok=false;info.used_fallback=true;return previous_delta;
         }
-
-        double fallback_margin = 1.0;
-        const double fallback_cost =
-            rolloutCost(e_y, e_theta, curvatures, fallback, previous_delta, fallback_margin, nullptr);
-        double candidate_margin = 1.0;
-        const double candidate_cost =
-            rolloutCost(e_y, e_theta, curvatures, candidate, previous_delta, candidate_margin, nullptr);
-
-        const bool candidate_good =
-            ok &&
-            std::isfinite(candidate_cost) &&
-            candidate_cost <= fallback_cost * fallback_cost_ratio_ + 1.0;
-        if (candidate_good) {
-            last_feasible_ = candidate;
-            info.cost = candidate_cost;
-            info.barrier_margin = std::min(barrier_margin, candidate_margin);
-            info.used_fallback = false;
-            info.solver_ok = true;
-        } else {
-            last_feasible_ = fallback;
-            info.cost = fallback_cost;
-            info.barrier_margin = fallback_margin;
-            info.used_fallback = true;
-            info.solver_ok = ok;
+        const int n=std::min(horizon_steps_,static_cast<int>(curvatures.size()));
+        CenterState initial;
+        initial<<e_y,e_theta,predicted_delta_,previous_delta;
+        const double future_step=std::min(0.20,command_rate_*ds_/
+                                                       std::max(0.05,runtime_speed_));
+        auto project=[&](std::vector<double>& controls) {
+            double last=previous_delta;
+            for(int k=0;k<n;++k) {
+                const double step=k==0 ? command_rate_*command_dt_ : future_step;
+                controls[k]=clampValue(controls[k],last-step,last+step);
+                controls[k]=clampValue(controls[k],-runtime_max_steer_,runtime_max_steer_);
+                last=controls[k];
+            }
+        };
+        std::vector<double> nominal(n,previous_delta);
+        // Do not shift a whole 0.10 m spatial cell every 33 ms control cycle.
+        for(int k=0;k<n;++k)
+            nominal[k]=last_feasible_.empty() ? feedforward(curvatures[k]) :
+                last_feasible_[std::min(static_cast<size_t>(k),last_feasible_.size()-1)];
+        project(nominal);
+        auto cost=[&](const std::vector<double>& controls) {
+            CenterState z=initial;double value=0.;
+            for(int k=0;k<n;++k) {
+                const double eta=z[1]+centerBeta(z[2],wheelbase_);
+                value+=q_y_*z[0]*z[0]+q_theta_*eta*eta+
+                    r_delta_*square(controls[k])+r_feedforward_*square(controls[k]-feedforward(curvatures[k]))+
+                    r_delta_rate_*square(controls[k]-z[3]);
+                z=centerStep(z,controls[k],curvatures[k]);
+                if(!z.allFinite() || std::fabs(z[1])>1.5) return 1e15;
+            }
+            return value+q_terminal_y_*z[0]*z[0]+
+                q_terminal_theta_*square(z[1]+centerBeta(z[2],wheelbase_));
+        };
+        double best_cost=cost(nominal);bool solved=false;
+        for(int iteration=0;iteration<3;++iteration) {
+            std::vector<CenterState> states(n+1);states[0]=initial;
+            for(int k=0;k<n;++k)states[k+1]=centerStep(states[k],nominal[k],curvatures[k]);
+            std::vector<Eigen::Matrix<double,1,4>> gains(n);
+            std::vector<double> feed(n);
+            auto headingCost=[&](const CenterState& z,double qy,double qt,
+                                 CenterMatrix& q,CenterState& linear) {
+                CenterState g=CenterState::Zero();g[1]=1.;g[2]=betaDerivative(z[2],wheelbase_);
+                q=qt*g*g.transpose();q(0,0)+=qy;
+                linear=qt*(z[1]+centerBeta(z[2],wheelbase_)-g.dot(z))*g;
+            };
+            CenterMatrix p;CenterState pv;
+            headingCost(states[n],q_terminal_y_,q_terminal_theta_,p,pv);
+            bool finite=true;
+            for(int k=n-1;k>=0;--k) {
+                const CenterState& z=states[k];
+                CenterMatrix a;CenterState b;
+                const double epsilon=1e-5;
+                for(int j=0;j<4;++j) {
+                    CenterState plus=z,minus=z;plus[j]+=epsilon;minus[j]-=epsilon;
+                    a.col(j)=(centerStep(plus,nominal[k],curvatures[k])-
+                              centerStep(minus,nominal[k],curvatures[k]))/(2.*epsilon);
+                }
+                b=(centerStep(z,nominal[k]+epsilon,curvatures[k])-
+                   centerStep(z,nominal[k]-epsilon,curvatures[k]))/(2.*epsilon);
+                const CenterState c=states[k+1]-a*z-b*nominal[k];
+                CenterMatrix q;CenterState qv;
+                headingCost(z,q_y_,q_theta_,q,qv);q(3,3)+=r_delta_rate_;
+                CenterState cross=CenterState::Zero();cross[3]=-r_delta_rate_;
+                const double r=r_delta_+r_feedforward_+r_delta_rate_;
+                const double rv=-r_feedforward_*feedforward(curvatures[k]);
+                const CenterState pc=p*c+pv,xu=cross+a.transpose()*p*b;
+                const double uu=r+b.dot(p*b)+1e-6,uv=rv+b.dot(pc);
+                gains[k]=(xu/uu).transpose();feed[k]=uv/uu;
+                const CenterMatrix next=q+a.transpose()*p*a-xu*xu.transpose()/uu;
+                pv=qv+a.transpose()*pc-xu*(uv/uu);
+                p=0.5*(next+next.transpose());
+                finite=finite && p.allFinite() && pv.allFinite() && uu>0.;
+            }
+            if(!finite)break;
+            solved=true;
+            std::vector<double> candidate(n);CenterState z=initial;
+            double last=previous_delta;
+            for(int k=0;k<n;++k) {
+                const double step=k==0 ? command_rate_*command_dt_ : future_step;
+                candidate[k]=clampValue(-(gains[k].dot(z)+feed[k]),last-step,last+step);
+                candidate[k]=clampValue(candidate[k],-runtime_max_steer_,runtime_max_steer_);
+                z=centerStep(z,candidate[k],curvatures[k]);last=candidate[k];
+            }
+            bool improved=false;
+            for(double alpha : {1.,0.5,0.25}) {
+                std::vector<double> trial(n);
+                for(int k=0;k<n;++k)trial[k]=nominal[k]+alpha*(candidate[k]-nominal[k]);
+                const double trial_cost=cost(trial);
+                if(trial_cost<=best_cost) {
+                    best_cost=trial_cost;nominal=trial;improved=true;break;
+                }
+            }
+            if(!improved)break;
         }
-
-        double selected_margin = 1.0;
-        RolloutMetrics metrics;
-        info.cost = rolloutCost(e_y,
-                                e_theta,
-                                curvatures,
-                                last_feasible_,
-                                previous_delta,
-                                selected_margin,
-                                &metrics);
-        info.barrier_margin = std::min(info.barrier_margin, selected_margin);
-        info.tracking_slack = metrics.tracking_slack;
-        info.envelope_slack = metrics.envelope_slack;
-        info.soft_constraint_active =
-            metrics.tracking_slack > 1e-4 || metrics.envelope_slack > 1e-4;
-        info.delta = clampValue(last_feasible_.front(), -runtime_max_steer_, runtime_max_steer_);
+        last_feasible_=nominal;
+        info.solver_ok=solved && std::isfinite(best_cost) && best_cost<1e14;
+        info.used_fallback=!info.solver_ok;info.cost=best_cost;info.delta=nominal.front();
+        info.barrier_margin=std::max(1e-6,1.-square(info.delta/runtime_max_steer_));
         return info.delta;
     }
 
@@ -3690,238 +3726,11 @@ public:
     }
 
 private:
-    struct RolloutMetrics {
-        double tracking_slack = 0.0;
-        double envelope_slack = 0.0;
-    };
-
-    std::vector<double> shiftedFeasible(const std::vector<double>& curvatures,
-                                        int n,
-                                        double previous_delta) const {
-        std::vector<double> out(static_cast<size_t>(n), previous_delta);
-        if (last_feasible_.empty()) {
-            for (int i = 0; i < n; ++i) {
-                out[static_cast<size_t>(i)] = feedforward(curvatures[static_cast<size_t>(std::min(i, static_cast<int>(curvatures.size()) - 1))]);
-            }
-        } else {
-            for (int i = 0; i < n; ++i) {
-                const size_t src = std::min(static_cast<size_t>(i + 1), last_feasible_.size() - 1);
-                out[static_cast<size_t>(i)] = last_feasible_[src];
-            }
-        }
-        projectSequence(out, previous_delta);
-        return out;
-    }
-
-    bool backwardPass(const std::vector<double>& curvatures,
-                      int n,
-                      const std::vector<double>& nominal,
-                      std::vector<Eigen::RowVector3d>& gains,
-                      std::vector<double>& feedforward_terms,
-                      double& barrier_margin) const {
-        Eigen::Matrix3d p_mat = Eigen::Matrix3d::Zero();
-        const double q_scale = 1.0;
-        const double r_delta_rate_eff_base = runtime_r_delta_rate_;
-        p_mat(0, 0) = active_adapt_scale_ * q_scale * q_terminal_y_;
-        p_mat(1, 1) = active_adapt_scale_ * q_scale * q_terminal_theta_;
-        p_mat(2, 2) = 0.10 * r_delta_rate_eff_base;
-        Eigen::Vector3d p_vec = Eigen::Vector3d::Zero();
-        barrier_margin = 1.0;
-
-        for (int k = n - 1; k >= 0; --k) {
-            const double kappa = curvatures[static_cast<size_t>(std::min(k, static_cast<int>(curvatures.size()) - 1))];
-            const double delta_ff = feedforward(kappa);
-            const double sec2 = 1.0 / std::max(0.08, square(std::cos(delta_ff)));
-            const double b_delta = ds_ * sec2 / std::max(0.05, wheelbase_);
-
-            Eigen::Matrix3d a = Eigen::Matrix3d::Zero();
-            a(0, 0) = 1.0;
-            a(0, 1) = ds_;
-            a(1, 0) = -ds_ * kappa * kappa;
-            a(1, 1) = 1.0;
-            Eigen::Vector3d b;
-            b << 0.0, b_delta, 1.0;
-            Eigen::Vector3d c;
-            c << 0.0, -b_delta * delta_ff, 0.0;
-
-            const double nominal_delta = nominal[static_cast<size_t>(k)];
-            const double steer_h = barrierHessian(nominal_delta, runtime_max_steer_, barrier_weight_);
-            const double steer_g = barrierGradient(nominal_delta, runtime_max_steer_, barrier_weight_);
-            barrier_margin = std::min(barrier_margin, barrierMargin(nominal_delta, runtime_max_steer_));
-
-            const double prev_nominal = (k == 0) ? nominal.front() : nominal[static_cast<size_t>(k - 1)];
-            const double rate_nominal = nominal_delta - prev_nominal;
-            const double rate_h = barrierHessian(rate_nominal, max_sequence_delta_step_, barrier_rate_weight_);
-            barrier_margin = std::min(barrier_margin, barrierMargin(rate_nominal, max_sequence_delta_step_));
-
-            const double r_delta_eff = runtime_r_delta_;
-            const double r_feedforward_eff = straight_mode_ ? r_feedforward_straight_ : r_feedforward_;
-            const double yaw_delta_gain = runtime_speed_ / std::max(0.05, wheelbase_);
-            const double yaw_delta_weight =
-                (straight_mode_ ? straight_yaw_rate_penalty_ : yaw_rate_penalty_) *
-                yaw_delta_gain * yaw_delta_gain;
-            const double feedback_weight =
-                straight_mode_ ? straight_steering_feedback_penalty_ : steering_feedback_penalty_;
-            const double r_rate_eff = r_delta_rate_eff_base + 0.5 * rate_h;
-            Eigen::Matrix3d q = Eigen::Matrix3d::Zero();
-            q(0, 0) = active_adapt_scale_ * q_scale * runtime_q_y_;
-            q(1, 1) = active_adapt_scale_ * q_scale * runtime_q_theta_;
-            q(2, 2) = r_rate_eff;
-            Eigen::Vector3d s = Eigen::Vector3d::Zero();
-            s(2) = -r_rate_eff;
-            const double r = r_delta_eff + r_feedforward_eff + r_rate_eff +
-                             yaw_delta_weight + feedback_weight + 0.5 * steer_h;
-            const double lin_r =
-                -(r_delta_eff + r_feedforward_eff) * delta_ff -
-                feedback_weight * runtime_steering_feedback_ +
-                0.5 * (steer_g - steer_h * nominal_delta);
-
-            const Eigen::Vector3d pc = p_mat * c + p_vec;
-            const Eigen::Matrix3d qxx = q + a.transpose() * p_mat * a;
-            const Eigen::Vector3d qxu = s + a.transpose() * p_mat * b;
-            const double quu = r + b.transpose() * p_mat * b;
-            const Eigen::Vector3d qx = a.transpose() * pc;
-            const double qu = lin_r + b.dot(pc);
-
-            if (!std::isfinite(quu) || quu <= 1e-8) {
-                return false;
-            }
-            gains[static_cast<size_t>(k)] = (qxu / quu).transpose();
-            feedforward_terms[static_cast<size_t>(k)] = qu / quu;
-            p_mat = qxx - (qxu * qxu.transpose()) / quu;
-            p_mat = 0.5 * (p_mat + p_mat.transpose());
-            p_vec = qx - qxu * (qu / quu);
-            if (!p_mat.allFinite() || !p_vec.allFinite()) {
-                return false;
-            }
-        }
-        return true;
-    }
-
-    std::vector<double> forwardPass(double e_y,
-                                    double e_theta,
-                                    const std::vector<double>& curvatures,
-                                    double previous_delta,
-                                    const std::vector<Eigen::RowVector3d>& gains,
-                                    const std::vector<double>& feedforward_terms) const {
-        const int n = static_cast<int>(gains.size());
-        std::vector<double> controls(static_cast<size_t>(n), previous_delta);
-        Eigen::Vector3d z;
-        z << clampValue(e_y, -error_guard_y_, error_guard_y_),
-             clampValue(e_theta, -error_guard_theta_, error_guard_theta_),
-             clampValue(previous_delta, -runtime_max_steer_, runtime_max_steer_);
-        double last_delta = previous_delta;
-        for (int k = 0; k < n; ++k) {
-            double delta = -(feedforward_terms[static_cast<size_t>(k)] +
-                             gains[static_cast<size_t>(k)].dot(z));
-            delta = clampValue(delta, -0.995 * runtime_max_steer_, 0.995 * runtime_max_steer_);
-            delta = clampValue(delta,
-                               last_delta - max_sequence_delta_step_,
-                               last_delta + max_sequence_delta_step_);
-            controls[static_cast<size_t>(k)] = delta;
-
-            double ey = z[0];
-            double eth = z[1];
-            const double kappa = curvatures[static_cast<size_t>(std::min(k, static_cast<int>(curvatures.size()) - 1))];
-            stepState(kappa, delta, ey, eth);
-            z << ey, eth, delta;
-            last_delta = delta;
-        }
-        projectSequence(controls, previous_delta);
-        return controls;
-    }
-
-    void projectSequence(std::vector<double>& controls, double previous_delta) const {
-        double last = previous_delta;
-        for (double& delta : controls) {
-            delta = clampValue(delta, -0.995 * runtime_max_steer_, 0.995 * runtime_max_steer_);
-            delta = clampValue(delta,
-                               last - max_sequence_delta_step_,
-                               last + max_sequence_delta_step_);
-            last = delta;
-        }
-    }
-
-    double rolloutCost(double e_y,
-                       double e_theta,
-                       const std::vector<double>& curvatures,
-                       const std::vector<double>& controls,
-                       double previous_delta,
-                       double& barrier_margin,
-                       RolloutMetrics* metrics) const {
-        double ey = clampValue(e_y, -error_guard_y_, error_guard_y_);
-        double eth = clampValue(e_theta, -error_guard_theta_, error_guard_theta_);
-        double last_delta = previous_delta;
-        double cost = 0.0;
-        barrier_margin = 1.0;
-        RolloutMetrics local_metrics;
-        for (size_t i = 0; i < controls.size(); ++i) {
-            const double kappa = curvatures[std::min(i, curvatures.size() - 1)];
-            const double delta = controls[i];
-            stepState(kappa, delta, ey, eth);
-            const double ff = feedforward(kappa);
-            const double d_delta = delta - last_delta;
-            const double slack_y = std::max(0.0, std::fabs(ey) - soft_y_bound_);
-            const double slack_theta = std::max(0.0, std::fabs(eth) - soft_theta_bound_);
-            const double tracking_slack = slack_y + slack_theta;
-            const double yaw_rate_pred =
-                runtime_speed_ * std::tan(delta) / std::max(0.05, wheelbase_);
-            const double envelope_slack =
-                std::max(0.0, std::fabs(yaw_rate_pred) - yawRateBound());
-            local_metrics.tracking_slack =
-                std::max(local_metrics.tracking_slack, tracking_slack);
-            local_metrics.envelope_slack =
-                std::max(local_metrics.envelope_slack, envelope_slack);
-            barrier_margin = std::min(barrier_margin, barrierMargin(delta, runtime_max_steer_));
-            barrier_margin = std::min(barrier_margin, barrierMargin(d_delta, max_sequence_delta_step_));
-            const double q_scale = 1.0;
-            const double r_delta_eff = runtime_r_delta_;
-            const double r_delta_rate_eff = runtime_r_delta_rate_;
-            const double r_feedforward_eff = straight_mode_ ? r_feedforward_straight_ : r_feedforward_;
-            const double yaw_penalty = straight_mode_ ? straight_yaw_rate_penalty_ : yaw_rate_penalty_;
-            const double feedback_penalty =
-                straight_mode_ ? straight_steering_feedback_penalty_ : steering_feedback_penalty_;
-            cost += active_adapt_scale_ * q_scale *
-                    (runtime_q_y_ * ey * ey + runtime_q_theta_ * eth * eth);
-            cost += slack_l1_ * tracking_slack + slack_l2_ * tracking_slack * tracking_slack;
-            cost += yaw_envelope_weight_ * envelope_slack * envelope_slack;
-            cost += yaw_penalty * yaw_rate_pred * yaw_rate_pred;
-            cost += feedback_penalty * square(delta - runtime_steering_feedback_);
-            cost += r_delta_eff * delta * delta + r_feedforward_eff * square(delta - ff);
-            cost += r_delta_rate_eff * d_delta * d_delta;
-            cost += barrierPenalty(delta, runtime_max_steer_, barrier_weight_);
-            cost += barrierPenalty(d_delta, max_sequence_delta_step_, barrier_rate_weight_);
-            last_delta = delta;
-        }
-        const double q_scale = 1.0;
-        cost += active_adapt_scale_ * q_scale *
-                (q_terminal_y_ * ey * ey + q_terminal_theta_ * eth * eth);
-        if (metrics != nullptr) {
-            *metrics = local_metrics;
-        }
-        return std::isfinite(cost) ? cost : std::numeric_limits<double>::infinity();
-    }
-
-    void stepState(double curvature, double delta, double& e_y, double& e_theta) const {
-        const double ey = clampValue(e_y, -error_guard_y_, error_guard_y_);
-        const double eth = clampValue(e_theta, -error_guard_theta_, error_guard_theta_);
-        const double cos_eth = std::max(0.18, std::fabs(std::cos(eth)));
-        const double geometry = clampValue(1.0 - curvature * ey, 0.20, 2.80);
-        const double ey_prime = geometry * std::tan(eth);
-        const double etheta_prime = std::tan(delta) / std::max(0.05, wheelbase_) *
-                                        geometry / cos_eth -
-                                    curvature;
-        e_y = clampValue(e_y + ds_ * ey_prime, -error_guard_y_, error_guard_y_);
-        e_theta = clampValue(wrapAngle(e_theta + ds_ * etheta_prime),
-                             -error_guard_theta_,
-                             error_guard_theta_);
-    }
-
     double feedforward(double curvature) const {
-        const double limit = straight_mode_
-                                 ? std::min(0.95 * runtime_max_steer_, straight_delta_ff_limit_)
-                                 : 0.95 * runtime_max_steer_;
-        return clampValue(std::atan(wheelbase_ * curvature), -limit, limit);
+        const double rear_curvature=curvature/std::sqrt(std::max(0.05,
+                                               1.-square(0.30*curvature)));
+        return clampValue(std::atan(wheelbase_*rear_curvature),
+                          -runtime_max_steer_,runtime_max_steer_);
     }
 
     double barrierMargin(double value, double bound) const {
@@ -3954,6 +3763,10 @@ private:
         return 2.0 * weight * (b2 + value * value) / (margin * margin);
     }
 
+    double predicted_delta_=0.;
+    double command_dt_=1./30.;
+    double command_rate_=1.;
+    double actuator_tau_=0.44;
     std::vector<double> last_feasible_;
     int horizon_steps_ = 20;
     double ds_ = 0.10;
@@ -4089,6 +3902,8 @@ private:
         ros::Time stamp;
         std::string mode = "UNKNOWN";
         std::string reason = "none";
+        double origin_rate_cap=std::numeric_limits<double>::infinity();
+        double origin_geometry_stamp=0.;
         double quality = 1.0;
         double age = 0.0;
         bool held_by_hysteresis = false;
@@ -4242,6 +4057,10 @@ private:
         max_cps_comp_ = pnh_.param("max_cps_comp", 0.06);
         delay_compensation_enabled_ = pnh_.param("delay_compensation_enabled", true);
         steering_delay_seconds_ = pnh_.param("steering_delay_seconds", 0.20);
+        tracking_delay_ = std::max(0.,pnh_.param("tracking_actuator_delay",0.325));
+        tracking_tau_ = std::max(0.05,pnh_.param("tracking_actuator_tau",0.44));
+        ROS_INFO("Center SLQR: wheelbase=0.60 m, rear-to-center=0.30 m, tracking delay=%.3f s, tau=%.3f s",
+                 tracking_delay_,tracking_tau_);
         steering_delay_steps_ = pnh_.param("steering_delay_steps", 4);
         delay_derivative_gain_ = pnh_.param("delay_derivative_gain", 0.12);
         max_delay_comp_ = pnh_.param("max_delay_comp", 0.08);
@@ -4520,6 +4339,12 @@ private:
             return;
         }
         mkdir(debug_log_dir_.c_str(), 0775);
+        origin_run_id_=std::to_string(ros::WallTime::now().toNSec());
+        origin_control_log_.open(joinPath(debug_log_dir_,"origin_control_"+origin_run_id_+".csv").c_str());
+        if(origin_control_log_)origin_control_log_<<
+            "run_id,stamp,path_stamp,path_transport_yaw,pose_query_dt,reference_center,ey,body_heading_error,course_error,"
+            "predicted_delta,predicted_progress,actual_delta,steering_receive_age,cmd,cmd_speed,wheel_speed,"
+            "delay,tau,solver_ok,mode,stop_reason,origin_rate_cap,speed_constraint,history_source_age,path_valid,rear_x,rear_y,body_yaw\n";
         runtime_log_.open(joinPath(debug_log_dir_, runtime_debug_file_).c_str(), std::ios::out | std::ios::trunc);
         path_log_.open(joinPath(debug_log_dir_, path_debug_file_).c_str(), std::ios::out | std::ios::trunc);
         profile_log_.open(joinPath(debug_log_dir_, profile_debug_file_).c_str(), std::ios::out | std::ios::trunc);
@@ -4627,7 +4452,7 @@ private:
                             "nmpc_active,nmpc_cost_cte,nmpc_cost_heading,"
                             "nmpc_cost_steer_rate,qp_speed_active,speed_qp_cap_reason,"
                             "control_fallback_reason,mode_switch_count_60s,"
-                            "comp_clipped,safe_stop,dynamic_horizon_reserve,true_stop_reason,stop_reason\n";
+                            "comp_clipped,safe_stop,dynamic_horizon_reserve,true_stop_reason,stop_reason,curve_kappa_before_quality,curve_kappa_after_quality,active_steer_limit,slqr_feedback_applied,steer_delay_requested_distance\n";
         }
         if (path_log_) {
             path_log_ << "stamp,source,path_seq,index,s,x,y,yaw\n";
@@ -4651,11 +4476,13 @@ private:
 
     void referenceCallback(const nav_msgs::Path::ConstPtr& msg) {
         reference_path_ = extractor_.ingestPath(*msg, ros::Time::now(), "reference");
+        attachPathPose(reference_path_);
         writePathSnapshot(reference_path_);
     }
 
     void rawPathCallback(const nav_msgs::Path::ConstPtr& msg) {
         raw_path_ = extractor_.ingestPath(*msg, ros::Time::now(), "raw");
+        attachPathPose(raw_path_);
         writePathSnapshot(raw_path_);
     }
 
@@ -4672,6 +4499,11 @@ private:
 
     void referenceStatusCallback(const std_msgs::String::ConstPtr& msg) {
         const ros::Time now = ros::Time::now();
+        const std::string rate_cap=parseStatusField(msg->data,"origin_rate_cap");
+        const std::string geometry_stamp=parseStatusField(msg->data,"geometry_stamp");
+        reference_status_.origin_rate_cap=rate_cap.empty()?std::numeric_limits<double>::infinity():
+            std::max(0.,std::atof(rate_cap.c_str()));
+        reference_status_.origin_geometry_stamp=geometry_stamp.empty()?0.:std::atof(geometry_stamp.c_str());
         const std::string mode = parseStatusField(msg->data, "mode");
         const std::string reason = parseStatusField(msg->data, "reason");
         const std::string quality = parseStatusField(msg->data, "quality");
@@ -5004,6 +4836,7 @@ private:
         }
         vehicle_.stamp = now;
         vehicle_.steering_valid = true;
+        last_steering_receive_=ros::Time::now();
         cps_.updateSteeringFeedback(vehicle_.steering_feedback, now);
     }
 
@@ -5040,6 +4873,8 @@ private:
             debug.reference_quality = 0.45;
             return &raw_path_;
         }
+        debug.path_stale_reason=reference_path_.points.size()<2 ? "path_empty" :
+            (pathSpan(reference_path_)<min_path_span_ ? "path_too_short" : "path_stale");
         return nullptr;
     }
 
@@ -5495,18 +5330,8 @@ private:
             return true;
         }
 
-        const bool can_hold = has_last_good_problem_ &&
-                              (now - last_good_problem_stamp_).toSec() <= reference_hold_timeout_;
-        if (can_hold) {
-            selected = last_good_problem_;
-            debug.hold_reason = reject_reason;
-            debug.reference_held = true;
-            debug.control_mode = "QUALITY_HOLD";
-            last_reference_hold_time_ = now;
-            was_reference_held_ = true;
-            debug.reference_quality = std::min(debug.reference_quality, 0.50);
-            return true;
-        }
+        // Geometry may be held and transported, but old local-frame error
+        // scalars must never be substituted for the current projection.
         debug.hold_reason = reject_reason;
         debug.reject_stage = reject_reason;
         debug.control_mode = "HARD_STOP";
@@ -6298,7 +6123,7 @@ private:
                    debug.reference_held || debug.reference_stale) {
             // Geometrically executable held history remains a crawl reference;
             // its status classification must not turn it into a stop latch.
-            base = std::min(base, 0.10);
+            base = std::min(base, 0.30);
         }
 
         out.speed_base = clampValue(base, 0.0, continuous_catchup_max_speed_);
@@ -6448,7 +6273,60 @@ private:
         return wrapAngle(ned_course_yaw_ - ned_pose_yaw_);
     }
 
+    void advanceTrackingPose(const ros::Time& now) {
+        if(tracking_poses_.empty()) {
+            TrackingPose p;p.stamp=now;tracking_poses_.push_back(p);return;
+        }
+        TrackingPose p=tracking_poses_.back();
+        const double duration=(now-p.stamp).toSec();
+        if(duration<=0.)return;
+        const double speed=vehicle_.speed_valid?vehicle_.speed:filtered_cmd_.speed;
+        const bool imu_fresh=has_imu_yaw_rate_ && !last_imu_yaw_rate_stamp_.isZero() &&
+            (now-last_imu_yaw_rate_stamp_).toSec()<=yaw_rate_imu_timeout_;
+        const double rate=imu_fresh?last_imu_yaw_rate_raw_:
+            speed*std::tan(vehicle_.steering_feedback)/wheelbase_;
+        double elapsed=0.;
+        while(elapsed<duration) {
+            const double dt=std::min(0.02,duration-elapsed);
+            p.x+=speed*std::cos(p.yaw+0.5*rate*dt)*dt;
+            p.y+=speed*std::sin(p.yaw+0.5*rate*dt)*dt;
+            p.yaw=wrapAngle(p.yaw+rate*dt);elapsed+=dt;
+        }
+        p.stamp=now;tracking_poses_.push_back(p);
+        while(tracking_poses_.size()>2 &&
+              (now-tracking_poses_[1].stamp).toSec()>3.)tracking_poses_.pop_front();
+    }
+
+    bool queryTrackingPose(const ros::Time& stamp,TrackingPose& out) const {
+        if(tracking_poses_.empty())return false;
+        if(stamp<tracking_poses_.front().stamp) {
+            if((tracking_poses_.front().stamp-stamp).toSec()>0.05)return false;
+            out=tracking_poses_.front();return true;
+        }
+        for(size_t i=1;i<tracking_poses_.size();++i) {
+            if(stamp<=tracking_poses_[i].stamp) {
+                const auto& a=tracking_poses_[i-1];const auto& b=tracking_poses_[i];
+                const double u=(stamp-a.stamp).toSec()/(b.stamp-a.stamp).toSec();
+                out.stamp=stamp;out.x=a.x+u*(b.x-a.x);out.y=a.y+u*(b.y-a.y);
+                out.yaw=wrapAngle(a.yaw+u*wrapAngle(b.yaw-a.yaw));return true;
+            }
+        }
+        if((stamp-tracking_poses_.back().stamp).toSec()>0.05)return false;
+        out=tracking_poses_.back();return true;
+    }
+
+    void attachPathPose(PathBuffer& path) {
+        advanceTrackingPose(ros::Time::now());
+        path.publication_pose_valid=queryTrackingPose(path.stamp,path.publication_pose);
+        path.pose_query_dt=path.publication_pose_valid?
+            (path.publication_pose.stamp-path.stamp).toSec():std::numeric_limits<double>::quiet_NaN();
+    }
+
     ControlCmd computeCommand(const ros::Time& now, ControllerDebug& debug) {
+        advanceTrackingPose(now);
+        active_path_stamp_=ros::Time();
+        origin_solver_ok_=false;predicted_actual_delta_=predicted_progress_=
+            path_transport_yaw_=path_pose_query_dt_=std::numeric_limits<double>::quiet_NaN();
         debug.raw_chassis_error = vehicle_.chassis_error;
         const LeadTargetState lead = lead_observer_.state(now);
         collision_.updateLeadTarget(lead, now);
@@ -6494,8 +6372,17 @@ private:
 
         const PathBuffer* path = selectPath(now, debug);
         if (path == nullptr) {
-            return safeStop(now, stale_path_stop_ ? "path_stale" : "path_unavailable", debug);
+            const std::string reason=debug.path_stale_reason!="none" ? debug.path_stale_reason :
+                (stale_path_stop_ ? "path_stale" : "path_unavailable");
+            return safeStop(now,reason,debug);
         }
+        if(!path->publication_pose_valid || tracking_poses_.empty())
+            return safeStop(now,"path_pose_unavailable",debug);
+        path_pose_query_dt_=path->pose_query_dt;
+        path_transport_yaw_=wrapAngle(tracking_poses_.back().yaw-path->publication_pose.yaw);
+        PathBuffer current_path=transportCenterPath(*path,tracking_poses_.back());
+        path=&current_path;
+        active_path_stamp_=path->stamp;
         debug.path_points = static_cast<int>(path->points.size());
 
         const PathTrackingProblem extracted_problem = extractor_.extract(*path);
@@ -6847,6 +6734,8 @@ private:
             reference_status_.suffix_sign_flip_count >= 2 ||
             reference_status_.suffix_wiggle_after > 0.050 ||
             reference_status_.suffix_curvature_rate_p95 > 10.0;
+        const double curve_kappa_before_quality = preview_signal.kappa_cmd;
+        debug.curve_kappa_before_quality = curve_kappa_before_quality;
         const bool curve_present =
             std::fabs(preview_signal.kappa_cmd) > 0.12 ||
             std::fabs(preview_signal.kappa_ff) > 0.12 ||
@@ -6856,14 +6745,10 @@ private:
             (preview_signal.near_curve_consistency < 0.55 ||
              preview_signal.sign_conflict) &&
             wiggle_curvature_untrusted;
-        // Trackability only means the finite path can be executed; it does not
-        // make its curvature trustworthy.  The previous !reference_trackable
-        // condition disabled this entire quality path for every executable
-        // reference, so the July 18 zigzag kept curvature_trust=1.0 while its
-        // sign consistency was zero.
+        // Geometry evidence controls curvature trust. Low overall health alone
+        // must not straighten a held curve; freshness still limits speed.
         if (preview_signal.valid && curve_present &&
-            (debug.reference_health_score < reference_health_curve_gate_ ||
-             cross_weight_low || wiggle_curvature_untrusted ||
+            (cross_weight_low || wiggle_curvature_untrusted ||
              inconsistent_curve)) {
             const double health_t =
                 clampValue(debug.reference_health_score /
@@ -7015,14 +6900,17 @@ private:
             std::max<size_t>(1, steering_curvatures.size()),
             continuous_cruise_speed_);
 
-        const double previous_delta = filtered_cmd_.steering;
-        double delayed_e_y = filtered_e_y_;
-        double delayed_e_theta = debug.e_theta_control;
-        const int delay_steps = predictDelayCompensatedState(
-            steering_curvatures,
-            vehicle_speed_for_control,
-            delayed_e_y,
-            delayed_e_theta);
+        // Do not quality-scale or low-pass a different curvature than the one
+        // used to measure these errors. Predict both on the same center curve.
+        steering_curvatures=problem.curvatures;
+        debug.e_theta_control=problem.e_theta;
+        debug.curve_kappa_before_quality=problem.first_curvature;
+        debug.curve_kappa_after_quality=problem.first_curvature;
+        debug.kappa_control=problem.first_curvature;
+        const double previous_delta=filtered_cmd_.steering;
+        double delayed_e_y=problem.e_y,delayed_e_theta=problem.e_theta;
+        const int delay_steps=predictDelayCompensatedState(
+            now,steering_curvatures,vehicle_speed_for_control,delayed_e_y,delayed_e_theta);
         SpatialSLQR::SolveInfo slqr_info;
         slqr_.setRuntimeEnvelope(vehicle_speed_for_control, 0.45 * (1.0 - 0.35 * gamma), 9.80665);
         const double recovery_front_error =
@@ -7063,15 +6951,15 @@ private:
             std::fabs(preview_signal.kappa_cmd) < 0.10;
         slqr_.setRuntimeMode(recovery_mode_active_ ? 2 : (straight_slqr_mode ? 0 : 1));
         const bool slqr_preview_active =
-            preview_signal.valid && steering_curvatures.size() >= 2 &&
-            preview_tracker_.slqrMaxWeight() > 1e-4;
+            problem.valid && steering_curvatures.size() >= 2;
         slqr_.setRuntimeStability(straight_slqr_mode,
                                   filtered_yaw_rate_,
                                   vehicle_.steering_feedback);
+        slqr_.setActuatorState(predicted_actual_delta_,controlDt(now));
         double delta_base = 0.0;
         if (slqr_preview_active) {
             delta_base = slqr_.solve(delayed_e_y, delayed_e_theta, steering_curvatures, previous_delta, slqr_info);
-            updateBarrierAdaptation(slqr_info.barrier_margin);
+            slqr_.setAdaptScale(1.0);
         } else {
             slqr_.setAdaptScale(1.0);
             slqr_info.delta = 0.0;
@@ -7083,6 +6971,7 @@ private:
             slqr_info.envelope_slack = 0.0;
             slqr_info.soft_constraint_active = false;
         }
+        origin_solver_ok_=slqr_preview_active && slqr_info.solver_ok;
         const double slqr_profile_feedforward =
             steering_curvatures.empty()
                 ? 0.0
@@ -7291,12 +7180,13 @@ private:
                        -max_yaw_damping_delta_,
                        max_yaw_damping_delta_);
         double ramp_scale = 1.0;
+        debug.curve_kappa_after_quality = problem.first_curvature;
         const bool low_confidence_curve_reference =
             low_confidence_reference &&
             preview_signal.valid &&
             preview_signal.geometric_curve_evidence &&
             debug.reference_geometry_valid &&
-            std::fabs(preview_signal.kappa_cmd) > 0.15;
+            std::fabs(curve_kappa_before_quality) > 0.15;
         if (debug.reference_held && !debug.reference_trackable) {
             ramp_scale = low_confidence_curve_reference ? 0.85 : 0.65;
         } else if (!debug.reference_trackable &&
@@ -7308,48 +7198,10 @@ private:
             }
         }
         debug.control_ramp_scale = ramp_scale;
-        double active_steer_limit = preview_tracker_.deltaMax();
-        if (degraded_control) {
-            active_steer_limit =
-                std::min(active_steer_limit, std::max(0.05, degraded_max_steer_));
-        }
-        active_steer_limit = std::min(active_steer_limit, preview_tracker_.deltaMax());
-        const bool straight_low_curvature_reference =
-            preview_signal.valid &&
-            std::fabs(preview_signal.kappa_cmd) < 0.15 &&
-            (debug.segment_mode == "straight" || debug.segment_mode == "raw");
-        if (low_confidence_reference && straight_low_curvature_reference) {
-            active_steer_limit = std::min(active_steer_limit, degraded_hold_max_steer_);
-            debug.low_confidence_steer_cap_active = true;
-            debug.low_confidence_delta_cap = true;
-            debug.reference_trackable_mode =
-                provisional_tail_short ? "provisional_tail_short" : "low_confidence_straight";
-            debug.ref_tracking_class = debug.reference_trackable_mode;
-        } else if (low_confidence_curve_reference) {
-            active_steer_limit = std::min(active_steer_limit, degraded_curve_max_steer_);
-            debug.low_confidence_steer_cap_active = true;
-            debug.low_confidence_delta_cap = true;
-            debug.reference_trackable_mode = "low_confidence_curve";
-            debug.ref_tracking_class = debug.reference_trackable_mode;
-        } else if (low_confidence_reference) {
-            active_steer_limit = std::min(active_steer_limit, std::max(0.05, degraded_hold_max_steer_));
-            debug.low_confidence_steer_cap_active = true;
-            debug.low_confidence_delta_cap = true;
-            debug.reference_trackable_mode =
-                provisional_tail_short ? "provisional_tail_short" : "low_confidence_reference";
-            debug.ref_tracking_class = debug.reference_trackable_mode;
-        }
-        if (debug.straight_guard_active && debug.reference_confidence < 0.55) {
-            active_steer_limit = std::min(active_steer_limit, preview_tracker_.straightGuardDeltaMax());
-            debug.low_confidence_delta_cap = true;
-        }
-        if (bad_reference_geometry) {
-            active_steer_limit = std::min(active_steer_limit, 0.05);
-            debug.low_confidence_delta_cap = true;
-            debug.low_confidence_steer_cap_active = true;
-            debug.reference_trackable_mode = "bad_reference_geometry";
-            debug.ref_tracking_class = debug.reference_trackable_mode;
-        }
+        const double active_steer_limit=std::min(max_steer_,0.32);
+        debug.low_confidence_delta_cap=false;
+        debug.low_confidence_steer_cap_active=false;
+        debug.active_steer_limit = active_steer_limit;
         const UnifiedControlOutput unified_output =
             preview_tracker_.compute(tracking_signal,
                                      preview_signal,
@@ -7366,6 +7218,9 @@ private:
         debug.delta_unsaturated = unified_output.delta_unsaturated;
         debug.delta_saturation_margin = unified_output.delta_saturation_margin;
         debug.delta_ref_ff = unified_output.delta_ff;
+        debug.slqr_feedback_applied = unified_output.slqr_feedback_applied;
+        debug.steer_delay_requested_distance =
+            preview_signal.steer_delay_requested_distance;
         debug.delta_ref_course = unified_output.delta_course;
         debug.delta_lateral_raw = unified_output.delta_lateral_raw;
         debug.delta_ref_lateral = unified_output.delta_lateral;
@@ -7409,13 +7264,7 @@ private:
                                  : (slqr_preview_active && slqr_info.solver_ok
                                         ? "SLQR_NORMAL"
                                         : "PREVIEW_FALLBACK");
-        if (std::fabs(vehicle_speed_for_control) < 0.05 && !recovery_mode_active_) {
-            const double low_speed_preposition_limit =
-                std::min(0.22, std::fabs(unified_output.delta_ff) + 0.10);
-            delta_target = clampValue(delta_target,
-                                      -low_speed_preposition_limit,
-                                      low_speed_preposition_limit);
-        }
+
         delta_target = clampValue(delta_target, -active_steer_limit, active_steer_limit);
         const bool non_trackable_degraded_control =
             degraded_control && !trackable_raw_reference && !trackable_provisional;
@@ -7484,6 +7333,17 @@ private:
                                      follow_decision,
                                      debug);
         double planned_speed = clampValue(speed_choice.speed, 0.0, max_speed_);
+        // A geometric steering-rate limit, not a cache/confidence mode cap.
+        if(reference_status_.valid &&
+           std::fabs(reference_status_.origin_geometry_stamp-path->stamp.toSec())<0.20 &&
+           reference_status_.origin_rate_cap*0.98<planned_speed) {
+            planned_speed=reference_status_.origin_rate_cap*0.98;
+            speed_choice.speed_cap_final_reason="origin_steering_rate";
+        }
+        if(!slqr_info.solver_ok) {
+            planned_speed=std::min(planned_speed,0.10);
+            speed_choice.speed_cap_final_reason="slqr_sequence_fallback";
+        }
         if (follow_decision.hard_stop) {
             planned_speed = 0.0;
             speed_choice.mode = "follow_distance_stop";
@@ -7592,7 +7452,7 @@ private:
         debug.curve_rate_boost_active = false;
         last_curve_rate_kappa_cmd_ = preview_signal.kappa_cmd;
         last_curve_rate_stamp_ = now;
-        const double active_steer_rate = recovery_mode_active_ ? 0.60 : 1.00;
+        const double active_steer_rate = max_steer_rate_;
         // Invalid geometry owns no steering authority.  Recenter instead of
         // preserving a stale SLQR angle while longitudinal control is stopped.
         const double actuator_steer_target =
@@ -7646,17 +7506,17 @@ private:
         debug.soft_constraint_active = slqr_info.soft_constraint_active;
         debug.sqp_jerk_cost = 0.0;
         debug.delay_steps = delay_steps;
-        debug.actuator_delay_est = steering_delay_seconds_;
+        debug.actuator_delay_est = tracking_delay_;
         debug.delta_slqr = delta_base;
         debug.delta_ff = unified_output.delta_ff;
         debug.delta_fb = unified_output.delta_ref - unified_output.delta_ff;
         debug.yaw_rate_penalty =
             std::fabs(tracking_signal.yaw_rate_error) / std::max(1e-3, yaw_rate_slow_gate_);
-        debug.delta_comp = delta_comp;
+        debug.delta_comp = 0.0; // Diagnostic-only legacy compensation is not applied.
         debug.delta_cmd = filtered_cmd_.steering;
         debug.steer_feedback_for_control = vehicle_.steering_feedback;
         debug.yaw_rate = filtered_yaw_rate_;
-        debug.yaw_damping_delta = yaw_damping_delta;
+        debug.yaw_damping_delta = 0.0;
         debug.barrier_adapt_scale = slqr_.activeAdaptScale();
         debug.comp_clipped =
             std::fabs(cps_comp - cps_comp_limited) > 1e-6 ||
@@ -7684,46 +7544,36 @@ private:
         return filtered_cmd_;
     }
 
-    int predictDelayCompensatedState(const std::vector<double>& curvatures,
-                                     double speed,
-                                     double& e_y,
-                                     double& e_theta) const {
-        if (!delay_compensation_enabled_ || curvatures.empty()) {
-            return 0;
-        }
-        const double delay_distance = std::max(0.0, steering_delay_seconds_) *
-                                      std::max(v_min_, std::fabs(speed));
-        const int spatial_steps = static_cast<int>(
-            std::ceil(delay_distance / std::max(0.03, spatial_step_)));
-        const int steps = std::max(0, std::min(steering_delay_steps_, spatial_steps));
-        if (steps <= 0) {
-            return 0;
-        }
-        double delta = filtered_cmd_.steering;
-        if (!steering_history_.empty()) {
-            const ros::Time query = ros::Time::now() - ros::Duration(steering_delay_seconds_);
-            double best_age = std::numeric_limits<double>::infinity();
-            for (const TimedSteering& item : steering_history_) {
-                const double age = std::fabs((item.stamp - query).toSec());
-                if (age < best_age) {
-                    best_age = age;
-                    delta = item.value;
-                }
+    int predictDelayCompensatedState(const ros::Time& now,
+                                    std::vector<double>& curvatures,double speed,
+                                    double& e_y,double& e_theta) {
+        SpatialSLQR::CenterState z;
+        z<<e_y,e_theta,vehicle_.steering_feedback,filtered_cmd_.steering;
+        double progress=0.,elapsed=0.;int steps=0;
+        const std::vector<double> source=curvatures;
+        auto curvature=[&](double s) {
+            const double index=std::max(0.,s)/spatial_step_;
+            const size_t i=std::min(source.size()-1,static_cast<size_t>(index));
+            const size_t j=std::min(source.size()-1,i+1);
+            return source[i]+clampValue(index-i,0.,1.)*(source[j]-source[i]);
+        };
+        const double delay=delay_compensation_enabled_?tracking_delay_:0.;
+        while(elapsed<delay-1e-9 && !source.empty()) {
+            const double dt=std::min(0.02,delay-elapsed);
+            const ros::Time query=now-ros::Duration(delay-elapsed-0.5*dt);
+            double command=steering_history_.empty()?filtered_cmd_.steering:steering_history_.front().value;
+            for(const auto& sample:steering_history_) {
+                if(sample.stamp>query)break;
+                command=sample.value;
             }
+            SpatialSLQR::advanceCenter(curvature(progress),std::fabs(speed),
+                command,dt,tracking_tau_,wheelbase_,z,progress);
+            elapsed+=dt;++steps;
         }
-        for (int i = 0; i < steps; ++i) {
-            const double kappa = curvatures[static_cast<size_t>(std::min(i, static_cast<int>(curvatures.size()) - 1))];
-            const double ey = clampValue(e_y, -3.0, 3.0);
-            const double eth = clampValue(e_theta, -1.40, 1.40);
-            const double cos_eth = std::max(0.18, std::fabs(std::cos(eth)));
-            const double geometry = clampValue(1.0 - kappa * ey, 0.20, 2.80);
-            const double ey_prime = geometry * std::tan(eth);
-            const double eth_prime = std::tan(delta) / std::max(0.05, wheelbase_) *
-                                         geometry / cos_eth -
-                                     kappa;
-            e_y = clampValue(e_y + spatial_step_ * ey_prime, -3.0, 3.0);
-            e_theta = clampValue(wrapAngle(e_theta + spatial_step_ * eth_prime), -1.40, 1.40);
-        }
+        predicted_actual_delta_=z[2];predicted_progress_=progress;
+        e_y=z[0];e_theta=z[1];
+        for(size_t i=0;i<curvatures.size();++i)
+            curvatures[i]=curvature(progress+i*spatial_step_);
         return steps;
     }
 
@@ -8140,7 +7990,12 @@ private:
                      << (debug.safe_stop ? 1 : 0) << ","
                      << debug.dynamic_horizon_reserve << ","
                      << debug.true_stop_reason << ","
-                     << debug.stop_reason << "\n";
+                     << debug.stop_reason << ","
+                     << debug.curve_kappa_before_quality << ","
+                     << debug.curve_kappa_after_quality << ","
+                     << debug.active_steer_limit << ","
+                     << debug.slqr_feedback_applied << ","
+                     << debug.steer_delay_requested_distance << "\n";
     }
 
     void flushDebugLogs(const ros::Time& now, bool force = false) {
@@ -8151,6 +8006,7 @@ private:
             (now - last_debug_flush_stamp_).toSec() < debug_flush_period_) {
             return;
         }
+        if(origin_control_log_)origin_control_log_.flush();
         if (runtime_log_) {
             runtime_log_.flush();
         }
@@ -8168,6 +8024,23 @@ private:
         ControllerDebug debug;
         ControlCmd cmd = computeCommand(now, debug);
         last_control_time_ = now;
+        if(origin_control_log_) {
+            origin_control_log_<<std::fixed<<std::setprecision(9)<<origin_run_id_<<","<<now.toSec()<<","
+                <<active_path_stamp_.toSec()<<","<<path_transport_yaw_<<","<<path_pose_query_dt_<<",1,"
+                <<(debug.path_valid?debug.e_y:std::numeric_limits<double>::quiet_NaN())<<","
+                <<(debug.path_valid?debug.e_theta:std::numeric_limits<double>::quiet_NaN())<<","
+                <<(debug.path_valid?wrapAngle(debug.e_theta+SpatialSLQR::centerBeta(vehicle_.steering_feedback)):
+                    std::numeric_limits<double>::quiet_NaN())<<","
+                <<predicted_actual_delta_<<","<<predicted_progress_<<","<<vehicle_.steering_feedback<<","
+                <<(last_steering_receive_.isZero()?-1.:(now-last_steering_receive_).toSec())<<","
+                <<cmd.steering<<","<<cmd.speed<<","<<vehicle_.speed<<","
+                <<tracking_delay_<<","<<tracking_tau_<<","<<(!debug.safe_stop && origin_solver_ok_?1:0)<<","
+                <<debug.control_mode<<","<<debug.stop_reason<<","<<reference_status_.origin_rate_cap<<","
+                <<debug.speed_cap_winner<<","<<debug.accepted_source_age<<","<<(debug.path_valid?1:0)<<","
+                <<(tracking_poses_.empty()?0.:tracking_poses_.back().x)<<","
+                <<(tracking_poses_.empty()?0.:tracking_poses_.back().y)<<","
+                <<(tracking_poses_.empty()?0.:tracking_poses_.back().yaw)<<"\n";
+        }
 
         geometry_msgs::Twist msg;
         msg.linear.x = cmd.speed;
@@ -8278,6 +8151,11 @@ private:
     std::ofstream runtime_log_;
     std::ofstream path_log_;
     std::ofstream profile_log_;
+    std::ofstream origin_control_log_;
+    std::string origin_run_id_;
+    ros::Time last_steering_receive_,active_path_stamp_;
+    double path_transport_yaw_=0.,path_pose_query_dt_=0.;
+    bool origin_solver_ok_=false;
 
     std::string reference_topic_;
     std::string raw_topic_;
@@ -8355,11 +8233,14 @@ private:
     int min_path_points_ = 2;
     double min_path_span_ = 0.12;
     double desired_follow_distance_ = 2.0;
-    double hard_stop_distance_ = 0.65;
+    double hard_stop_distance_ = 0.50;
     double cps_compensation_gain_ = 0.30;
     double max_cps_comp_ = 0.06;
     bool delay_compensation_enabled_ = true;
     double steering_delay_seconds_ = 0.20;
+    double tracking_delay_=0.325,tracking_tau_=0.44;
+    double predicted_actual_delta_=0.,predicted_progress_=0.;
+    std::deque<TrackingPose> tracking_poses_;
     int steering_delay_steps_ = 4;
     double delay_derivative_gain_ = 0.12;
     double max_delay_comp_ = 0.08;
@@ -8614,6 +8495,7 @@ private:
 
 int main(int argc, char** argv) {
     ros::init(argc, argv, "virtual_towing_controller");
+    ROS_INFO("control_pub history_continuity_20261018_r1 built %s %s",__DATE__,__TIME__);
     VirtualTowingNode node;
     ros::spin();
     return 0;
