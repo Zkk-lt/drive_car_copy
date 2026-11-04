@@ -1,0 +1,45 @@
+{
+  "release": "S8",
+  "status": "user-accepted vehicle-test baseline",
+  "frozen_date": "2026-11-04",
+  "timezone": "Asia/Shanghai",
+  "git_tag": "S8",
+  "branch": "sucess_run_demo",
+  "repository": "https://github.com/Zkk-lt/drive_car_copy",
+  "runtime_revisions": {
+    "trajectory_reconstructor": "history_continuity_20261104_r6s8b",
+    "control_pub": "reference_continuity_20261104_r3"
+  },
+  "accepted_run": {
+    "reconstruction": "1793777995320545639",
+    "control": "1793777996985064346",
+    "raw_logs_uploaded": false
+  },
+  "sha256": {
+    "src/move_car/src/trajectory_reconstructor.cpp": "1afdd92403dcc00e7b8f72d52d46a5f89eb2bf7468aaaa975a5f92a3384eceeb",
+    "src/move_car/src/control_pub.cpp": "caf867b19aeea78dd3bfbc2d1b19718d1e0e8a95857918e4e6db6e8618bd6a94",
+    "src/move_car/launch/trajectory_reconstructor.launch": "547b1964fc5e66df14b48d9416cd60a9fe929b4977719f232cea2e54e1bbea8e",
+    "src/move_car/launch/movecar_improved.launch": "bc8dfa26bc82d72959bb343cbb6f1b5cfa421217c3336ab7d47a00ecdc12a3f4"
+  },
+  "settings": {
+    "wheelbase_m": 0.60,
+    "rear_to_center_m": 0.30,
+    "rear_to_lidar_m": 0.60,
+    "continuous_cruise_speed_mps": 0.30,
+    "follow_distance_band_speed_cap_mps": 0.48,
+    "follow_distance_stop_m": 0.50,
+    "continuous_lateral_accel_mps2": 0.25,
+    "max_accel_mps2": 0.28,
+    "max_decel_mps2": 0.36,
+    "max_jerk_mps3": 0.80,
+    "effective_max_steer_rad": 0.32,
+    "max_steer_rate_radps": 1.00,
+    "tracking_actuator_delay_s": 0.325,
+    "tracking_actuator_tau_s": 0.44
+  },
+  "startup": {
+    "independent_nodes": true,
+    "reconstruction": "roslaunch move_car trajectory_reconstructor.launch",
+    "control": "roslaunch move_car movecar_improved.launch"
+  }
+}

@@ -19,6 +19,7 @@
 #include <algorithm>
 #include <cstdlib>
 #include <cmath>
+#include <cstdint>
 #include <deque>
 #include <fstream>
 #include <iomanip>
@@ -38,6 +39,42 @@ double clampValue(double value, double lower, double upper) {
 
 double square(double value) {
     return value * value;
+}
+
+struct SteeringSampleGuard {
+    ros::Time accepted_stamp, seen_stamp, pending_stamp;
+    double raw=0., accepted=0., pending=0.;
+    uint64_t deferred_count=0;
+    bool initialized=false, pending_valid=false, deferred=false;
+
+    double update(double value,const ros::Time& stamp,double max_rate=1.) {
+        raw=value;deferred=false;
+        if(!std::isfinite(value) || stamp.isZero()) {deferred=true;return accepted;}
+        auto accept=[&]() {
+            initialized=true;accepted=value;accepted_stamp=seen_stamp=stamp;
+            pending_valid=false;return accepted;
+        };
+        if(!initialized || std::fabs((stamp-seen_stamp).toSec())>0.20)return accept();
+        if(stamp<seen_stamp){deferred=true;return accepted;}
+        seen_stamp=stamp;
+        const double rate=std::max(0.05,max_rate);
+        const double allowance=0.02+rate*std::min(0.10,(stamp-accepted_stamp).toSec());
+        if(std::fabs(value-accepted)<=allowance)return accept();
+        // One isolated feedback pulse must not become a new actuator state.
+        // Near-simultaneous car/carvel deliveries do not confirm a jump.
+        const double pending_dt=pending_valid?(stamp-pending_stamp).toSec():0.;
+        const bool consistent=pending_valid &&
+            std::fabs(value-pending)<=0.02+rate*std::min(0.10,pending_dt);
+        if(consistent && pending_dt>=0.04)return accept();
+        if(!consistent) {
+            pending=value;pending_stamp=stamp;pending_valid=true;++deferred_count;
+        }
+        deferred=true;return accepted;
+    }
+};
+
+double longitudinalAccelerationRequest(double target,double command,double accel,double decel) {
+    return clampValue((target-command)/0.60,-decel,accel);
 }
 
 double wrapAngle(double angle) {
@@ -119,14 +156,54 @@ struct TrackingPose {
     double x=0.,y=0.,yaw=0.;
 };
 
+struct ReferenceRateConstraint {
+    uint64_t geometry_stamp_ns = 0;
+    ros::Time received;
+    double speed_cap = std::numeric_limits<double>::infinity();
+    bool valid = false;
+
+    bool matches(const ros::Time& stamp,const ros::Time& now,double timeout) const {
+        const double age=(now-received).toSec();
+        return valid && std::isfinite(speed_cap) && speed_cap>=0.0 &&
+            geometry_stamp_ns==stamp.toNSec() && age>=0.0 && age<=timeout;
+    }
+
+    double limitSpeed(double target,const ros::Time& stamp,const ros::Time& now,double timeout) const {
+        return matches(stamp,now,timeout)?std::min(target,0.98*speed_cap):target;
+    }
+};
+
+class ReferenceRateCache {
+public:
+    void remember(const ReferenceRateConstraint& constraint) {
+        if(!constraint.geometry_stamp_ns)return;
+        for(auto& previous:samples_)if(previous.geometry_stamp_ns==constraint.geometry_stamp_ns) {
+            previous=constraint;return;
+        }
+        samples_.push_back(constraint);
+        while(samples_.size()>8)samples_.pop_front();
+    }
+
+    bool find(const ros::Time& stamp,ReferenceRateConstraint& result) const {
+        for(auto i=samples_.rbegin();i!=samples_.rend();++i)
+            if(i->geometry_stamp_ns==stamp.toNSec()){result=*i;return true;}
+        return false;
+    }
+
+private:
+    std::deque<ReferenceRateConstraint> samples_;
+};
+
 struct PathBuffer {
     TrackingPose publication_pose;
+    ReferenceRateConstraint rate_constraint;
     bool publication_pose_valid=false;
     double pose_query_dt=0.;
     ros::Time stamp;
     std::vector<PathPoint> points;
     bool valid = false;
     bool held_reference = false;
+    bool braking_reference = false;
     std::string source;
     bool conditioned = false;
     double turn_entry_s = -1.0;
@@ -170,6 +247,14 @@ struct PathTrackingProblem {
 };
 
 struct ControllerDebug {
+    bool reference_braking_only = false;
+    bool geometry_rate_matched = false;
+    uint64_t geometry_rate_stamp_ns = 0;
+    double geometry_rate_cap = std::numeric_limits<double>::infinity();
+    double geometry_rate_age = -1.0;
+    double speed_before_geometry_rate = 0.0;
+    double speed_after_geometry_rate = 0.0;
+    double acceleration_request = std::numeric_limits<double>::quiet_NaN();
     bool path_valid = false;
     bool using_raw_fallback = false;
     bool target_valid = false;
@@ -2604,6 +2689,8 @@ public:
         buffer.stamp = msg.header.stamp.isZero() ? now : msg.header.stamp;
         buffer.source = source;
         buffer.held_reference = (source == "reference" && msg.header.seq == 1u);
+        buffer.braking_reference = source == "reference" && !msg.poses.empty() &&
+            msg.poses.front().header.seq == 0x42524b31u;
 
         size_t last_valid=msg.poses.size();
         for(size_t i=msg.poses.size();i>0;--i) {
@@ -4344,7 +4431,9 @@ private:
         if(origin_control_log_)origin_control_log_<<
             "run_id,stamp,path_stamp,path_transport_yaw,pose_query_dt,reference_center,ey,body_heading_error,course_error,"
             "predicted_delta,predicted_progress,actual_delta,steering_receive_age,cmd,cmd_speed,wheel_speed,"
-            "delay,tau,solver_ok,mode,stop_reason,origin_rate_cap,speed_constraint,history_source_age,path_valid,rear_x,rear_y,body_yaw\n";
+            "delay,tau,solver_ok,mode,stop_reason,origin_rate_cap,speed_constraint,history_source_age,path_valid,rear_x,rear_y,body_yaw,"
+            "geometry_rate_matched,geometry_rate_stamp_ns,geometry_rate_cap,geometry_rate_age,speed_before_geometry_rate,speed_after_geometry_rate,acceleration_request,code_revision,reference_braking_only,"
+            "steering_input_raw,steering_input_used,steering_input_deferred,steering_input_defer_count,steering_input_valid_age\n";
         runtime_log_.open(joinPath(debug_log_dir_, runtime_debug_file_).c_str(), std::ios::out | std::ios::trunc);
         path_log_.open(joinPath(debug_log_dir_, path_debug_file_).c_str(), std::ios::out | std::ios::trunc);
         profile_log_.open(joinPath(debug_log_dir_, profile_debug_file_).c_str(), std::ios::out | std::ios::trunc);
@@ -4476,6 +4565,7 @@ private:
 
     void referenceCallback(const nav_msgs::Path::ConstPtr& msg) {
         reference_path_ = extractor_.ingestPath(*msg, ros::Time::now(), "reference");
+        reference_rate_cache_.find(reference_path_.stamp,reference_path_.rate_constraint);
         attachPathPose(reference_path_);
         writePathSnapshot(reference_path_);
     }
@@ -4501,6 +4591,7 @@ private:
         const ros::Time now = ros::Time::now();
         const std::string rate_cap=parseStatusField(msg->data,"origin_rate_cap");
         const std::string geometry_stamp=parseStatusField(msg->data,"geometry_stamp");
+        const std::string geometry_stamp_ns=parseStatusField(msg->data,"geometry_stamp_ns");
         reference_status_.origin_rate_cap=rate_cap.empty()?std::numeric_limits<double>::infinity():
             std::max(0.,std::atof(rate_cap.c_str()));
         reference_status_.origin_geometry_stamp=geometry_stamp.empty()?0.:std::atof(geometry_stamp.c_str());
@@ -4655,6 +4746,22 @@ private:
         reference_status_.age =
             reference_status_mode_since_.isZero() ? 0.0 : (now - reference_status_mode_since_).toSec();
         reference_status_.valid = true;
+        ReferenceRateConstraint constraint;
+        if(!geometry_stamp_ns.empty()) {
+            char* end=NULL;
+            constraint.geometry_stamp_ns=std::strtoull(geometry_stamp_ns.c_str(),&end,10);
+            if(!end || *end!='\0')constraint.geometry_stamp_ns=0;
+        } else if(std::isfinite(reference_status_.origin_geometry_stamp) &&
+                  reference_status_.origin_geometry_stamp>0.0 &&
+                  reference_status_.origin_geometry_stamp<std::numeric_limits<uint32_t>::max()) {
+            ros::Time legacy;legacy.fromSec(reference_status_.origin_geometry_stamp);
+            constraint.geometry_stamp_ns=legacy.toNSec();
+        }
+        constraint.received=now;constraint.speed_cap=reference_status_.origin_rate_cap;
+        constraint.valid=reference_status_.reference_geometry_valid &&
+            std::isfinite(constraint.speed_cap) && constraint.speed_cap>=0.0;
+        reference_rate_cache_.remember(constraint);
+        reference_rate_cache_.find(reference_path_.stamp,reference_path_.rate_constraint);
     }
 
     void trackedCallback(const geometry_msgs::PoseArray::ConstPtr& msg) {
@@ -4827,7 +4934,8 @@ private:
         if (!std::isfinite(steering)) {
             return;
         }
-        const double clipped = clampValue(steering, -max_steer_ * 1.25, max_steer_ * 1.25);
+        const double clipped = steering_sample_guard_.update(
+            clampValue(steering, -max_steer_ * 1.25, max_steer_ * 1.25),now,max_steer_rate_);
         if (!vehicle_.steering_valid) {
             vehicle_.steering_feedback = clipped;
         } else {
@@ -4836,7 +4944,7 @@ private:
         }
         vehicle_.stamp = now;
         vehicle_.steering_valid = true;
-        last_steering_receive_=ros::Time::now();
+        last_steering_receive_=steering_sample_guard_.accepted_stamp;
         cps_.updateSteeringFeedback(vehicle_.steering_feedback, now);
     }
 
@@ -6382,6 +6490,7 @@ private:
         path_transport_yaw_=wrapAngle(tracking_poses_.back().yaw-path->publication_pose.yaw);
         PathBuffer current_path=transportCenterPath(*path,tracking_poses_.back());
         path=&current_path;
+        debug.reference_braking_only=path->braking_reference;
         active_path_stamp_=path->stamp;
         debug.path_points = static_cast<int>(path->points.size());
 
@@ -7334,15 +7443,26 @@ private:
                                      debug);
         double planned_speed = clampValue(speed_choice.speed, 0.0, max_speed_);
         // A geometric steering-rate limit, not a cache/confidence mode cap.
-        if(reference_status_.valid &&
-           std::fabs(reference_status_.origin_geometry_stamp-path->stamp.toSec())<0.20 &&
-           reference_status_.origin_rate_cap*0.98<planned_speed) {
-            planned_speed=reference_status_.origin_rate_cap*0.98;
+        const auto& rate=path->rate_constraint;
+        debug.geometry_rate_matched=rate.matches(path->stamp,now,reference_hard_timeout_);
+        debug.geometry_rate_stamp_ns=rate.geometry_stamp_ns;
+        debug.geometry_rate_cap=rate.speed_cap;
+        debug.geometry_rate_age=rate.geometry_stamp_ns?(now-rate.received).toSec():-1.0;
+        debug.speed_before_geometry_rate=planned_speed;
+        const double rate_limited_speed=rate.limitSpeed(planned_speed,path->stamp,now,reference_hard_timeout_);
+        if(rate_limited_speed<planned_speed) {
+            planned_speed=rate_limited_speed;
             speed_choice.speed_cap_final_reason="origin_steering_rate";
         }
+        debug.speed_after_geometry_rate=planned_speed;
         if(!slqr_info.solver_ok) {
             planned_speed=std::min(planned_speed,0.10);
             speed_choice.speed_cap_final_reason="slqr_sequence_fallback";
+        }
+        if(path->braking_reference) {
+            planned_speed=0.;
+            speed_choice.speed_cap_final_reason="reference_prefix_braking";
+            speed_choice.stop_class="reference_prefix_braking";
         }
         if (follow_decision.hard_stop) {
             planned_speed = 0.0;
@@ -7422,23 +7542,21 @@ private:
         debug.final_speed_cap = planned_speed;
         const double speed_before_filter = filtered_cmd_.speed;
         const double previous_cmd_accel = last_cmd_accel_;
-        const double speed_error = planned_speed - speed_before_filter;
-        const double accel_limit = speed_error >= 0.0 ? max_accel_ : max_decel_;
-        const double braking_error =
-            previous_cmd_accel * speed_error > 0.0
-                ? previous_cmd_accel * previous_cmd_accel /
-                      (2.0 * std::max(0.05, max_jerk_))
-                : 0.0;
-        double desired_accel = 0.0;
-        if (std::fabs(speed_error) > braking_error + 0.002) {
-            desired_accel = (speed_error >= 0.0 ? 1.0 : -1.0) * accel_limit;
-        }
+        const double desired_accel=longitudinalAccelerationRequest(
+            planned_speed,speed_before_filter,max_accel_,max_decel_);
+        debug.acceleration_request=desired_accel;
         double jerk_limited_accel =
             approachWithLimit(previous_cmd_accel,
                               desired_accel,
                               max_jerk_ * dt);
         double speed_limited =
             speed_before_filter + jerk_limited_accel * dt;
+        if(path->braking_reference) {
+            // Keep the existing soft-stop longitudinal response when stopping
+            // margin is insufficient; only the valid steering reference stays.
+            speed_limited=approachWithLimit(speed_before_filter,0.,max_decel_*dt);
+            debug.acceleration_request=speed_limited>0.?-max_decel_:0.;
+        }
         if (follow_decision.hard_stop) {
             speed_limited = 0.0;
             jerk_limited_accel = 0.0;
@@ -8039,7 +8157,15 @@ private:
                 <<debug.speed_cap_winner<<","<<debug.accepted_source_age<<","<<(debug.path_valid?1:0)<<","
                 <<(tracking_poses_.empty()?0.:tracking_poses_.back().x)<<","
                 <<(tracking_poses_.empty()?0.:tracking_poses_.back().y)<<","
-                <<(tracking_poses_.empty()?0.:tracking_poses_.back().yaw)<<"\n";
+                <<(tracking_poses_.empty()?0.:tracking_poses_.back().yaw)<<","
+                <<(debug.geometry_rate_matched?1:0)<<","<<debug.geometry_rate_stamp_ns<<","
+                <<debug.geometry_rate_cap<<","<<debug.geometry_rate_age<<","
+                <<debug.speed_before_geometry_rate<<","<<debug.speed_after_geometry_rate<<","<<debug.acceleration_request
+                <<",reference_continuity_20261104_r3,"<<(debug.reference_braking_only?1:0)<<","
+                <<steering_sample_guard_.raw<<","<<steering_sample_guard_.accepted<<","
+                <<(steering_sample_guard_.deferred?1:0)<<","<<steering_sample_guard_.deferred_count<<","
+                <<(steering_sample_guard_.accepted_stamp.isZero()?-1.:
+                    (now-steering_sample_guard_.accepted_stamp).toSec())<<"\n";
         }
 
         geometry_msgs::Twist msg;
@@ -8143,8 +8269,10 @@ private:
     SpatialSLQR slqr_;
 
     VehicleState vehicle_;
+    SteeringSampleGuard steering_sample_guard_;
     ControlCmd filtered_cmd_;
     PathBuffer reference_path_;
+    ReferenceRateCache reference_rate_cache_;
     PathBuffer raw_path_;
     ros::Time last_control_time_;
     std::deque<TimedSteering> steering_history_;
@@ -8495,7 +8623,7 @@ private:
 
 int main(int argc, char** argv) {
     ros::init(argc, argv, "virtual_towing_controller");
-    ROS_INFO("control_pub history_continuity_20261018_r1 built %s %s",__DATE__,__TIME__);
+    ROS_INFO("control_pub reference_continuity_20261104_r3 built %s %s",__DATE__,__TIME__);
     VirtualTowingNode node;
     ros::spin();
     return 0;

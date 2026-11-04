@@ -27,7 +27,7 @@
     <param name="max_jerk" value="0.80"/>
     <param name="max_steer" value="0.38"/>
     <param name="max_steer_rate" value="1.00"/>
-    <param name="continuous_cruise_speed" value="0.27"/>
+    <param name="continuous_cruise_speed" value="0.30"/>
     <param name="continuous_catchup_max_speed" value="0.40"/>
     <param name="continuous_catchup_start_distance" value="2.30"/>
     <param name="continuous_catchup_cte_gate" value="0.16"/>
