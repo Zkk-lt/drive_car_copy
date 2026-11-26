@@ -1,0 +1,83 @@
+{
+  "algorithm": "flat_nmpc_slqr",
+  "binary_sha": {
+    "control_pub": "728ba5c29046028a97ced924da97d9360d0208263c9481d029ca8edbc6131d50",
+    "p5_nmpc_worker_node": "efc9808db7933c6a62eec072dc1b7890d5b3d1db19a7df2e967e9052ad447072"
+  },
+  "bounded_slqr_feedback": true,
+  "calibration_claim": false,
+  "candidate_count": 288,
+  "command_publishers": [
+    "/p7_smoke_controller"
+  ],
+  "commands": 375,
+  "commands_after_worker_exit": 82,
+  "data_origin": "synthetic_tool_test",
+  "decision_dimensions": [
+    8
+  ],
+  "flat_accuracy_refinement": false,
+  "flat_feasibility_recovery": false,
+  "fresh_local_feedback_candidates": 16,
+  "full_result_sha256": "50b5f37fdf60ae2212e3448bf47606e17e026715f8c3abf34247465ea97e992f",
+  "intervals_over_33_333_ms": 0,
+  "leased_nonzero_commands": 136,
+  "maximum_speed": 0.4,
+  "nmpc_selected": 95,
+  "none_turn_timing_on_straight_plant": true,
+  "nonzero_local_feedback_candidates": 16,
+  "normal_nmpc_above_previous_point_three_two": 68,
+  "pass_test": true,
+  "passive_command_subscribers": [],
+  "physical_execution_claims": 0,
+  "private_master": true,
+  "private_master_uri": "http://127.0.0.1:47937",
+  "production_modified": false,
+  "publish_intervals_ms": {
+    "max": 29.925582,
+    "p50": 25.001803,
+    "p95": 25.518485,
+    "p99": 27.021598
+  },
+  "published_records": 375,
+  "real_hardware": false,
+  "real_labelled_requests": 375,
+  "real_vehicle_test": false,
+  "reference_hz": 30,
+  "reference_quality": "healthy",
+  "reference_revalidation": true,
+  "request_count": 375,
+  "run_id": "p7real_software_smoke_1795688195995928360",
+  "shadow_only": false,
+  "single_commit": true,
+  "smooth_steering_handoff": true,
+  "solver_attempts": 147,
+  "source_sha": "c55b53abf6083e78aa7d656c8234bdd2d1f1162391737ea3a4eb11b9b6bbbe82",
+  "steering_rate_continuity_weight": 0.05,
+  "straight_conditioned_valid_candidates": 106,
+  "straight_damped_valid_candidates": 106,
+  "straight_tracking_reference": true,
+  "straight_yaw_damping_weight": 2.0,
+  "strategy_matches_frozen_flags": true,
+  "supported_course": true,
+  "test_mapping_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "turn_release_weight": 0.0,
+  "turn_speed_reserve": 0.025,
+  "unique_candidate_reasons": 137,
+  "valid_candidates": 106,
+  "wrong_frame_nmpc_accepted": 0,
+  "zero_speed_windows": {
+    "expired_lease": {
+      "maximum_speed": 0.0,
+      "n": 24
+    },
+    "initial_no_lease": {
+      "maximum_speed": 0.0,
+      "n": 42
+    },
+    "worker_exited_lease_expired": {
+      "maximum_speed": 0.0,
+      "n": 24
+    }
+  }
+}

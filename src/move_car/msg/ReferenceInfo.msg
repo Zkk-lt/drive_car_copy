@@ -1,0 +1,14 @@
+std_msgs/Header header
+uint32 schema_version
+string run_id
+uint64 geometry_stamp_ns
+string tracking_point
+bool geometry_valid
+bool time_parameterized
+bool braking_only
+float64 confidence
+float64 source_age
+float64 speed_cap
+bool speed_cap_valid
+string reason
+ReferenceSample[] samples

@@ -81,6 +81,9 @@
   <exec_depend>tf2</exec_depend>
   <exec_depend>tf2_ros</exec_depend>
   <exec_depend>eigen</exec_depend>
+  <exec_depend>tf2_msgs</exec_depend>
+  <exec_depend>python-yaml</exec_depend>
+  <exec_depend>python3-yaml</exec_depend>
 
   <!-- The export tag contains other, unspecified, tags -->
   <export>

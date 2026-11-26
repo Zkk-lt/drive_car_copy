@@ -1,0 +1,418 @@
+baseline_version: 695f1665feec86fd82e97f82c42fa85930c6bef5
+evidence:
+- research_runs/p6_run2004_optimization_20261118/data/README.md
+- research_runs/p6_run2004_optimization_20261118/core_audit.md
+- research_runs/p6_run2004_optimization_20261118/README.md
+features:
+  adaptation_enabled: false
+  nmpc_enabled: false
+  terrain_estimation_enabled: false
+kind: base
+parameters:
+  control_knots:
+    basis: geometry/lag from current source; NMPC settings are P2 design seeds, not
+      validated gains
+    bounds:
+    - 4
+    - 10
+    calibration_status: unverified
+    class: C
+    source:
+      kind: source_audit
+      reference: P5 source default or immutable launch safety snapshot; no physical
+        calibration claim
+    uncertainty:
+      known: false
+      stddev: null
+    unit: '1'
+    valid_speed_range:
+    - 0.0
+    - 0.5
+    value: 6
+  control_rate:
+    basis: geometry/lag from current source; NMPC settings are P2 design seeds, not
+      validated gains
+    bounds:
+    - 30.0
+    - 30.0
+    calibration_status: unverified
+    class: C
+    source:
+      kind: source_audit
+      reference: P5 source default or immutable launch safety snapshot; no physical
+        calibration claim
+    uncertainty:
+      known: false
+      stddev: null
+    unit: Hz
+    valid_speed_range:
+    - 0.0
+    - 0.5
+    value: 30.0
+  horizon_steps:
+    basis: geometry/lag from current source; NMPC settings are P2 design seeds, not
+      validated gains
+    bounds:
+    - 10
+    - 40
+    calibration_status: unverified
+    class: C
+    source:
+      kind: source_audit
+      reference: P5 source default or immutable launch safety snapshot; no physical
+        calibration claim
+    uncertainty:
+      known: false
+      stddev: null
+    unit: '1'
+    valid_speed_range:
+    - 0.0
+    - 0.5
+    value: 20
+  prediction_dt:
+    basis: geometry/lag from current source; NMPC settings are P2 design seeds, not
+      validated gains
+    bounds:
+    - 0.05
+    - 0.2
+    calibration_status: unverified
+    class: C
+    source:
+      kind: source_audit
+      reference: P5 source default or immutable launch safety snapshot; no physical
+        calibration claim
+    uncertainty:
+      known: false
+      stddev: null
+    unit: s
+    valid_speed_range:
+    - 0.0
+    - 0.5
+    value: 0.1
+  rear_to_center:
+    basis: geometry/lag from current source; NMPC settings are P2 design seeds, not
+      validated gains
+    bounds:
+    - 0.3
+    - 0.3
+    calibration_status: unverified
+    class: B
+    source:
+      kind: source_audit
+      reference: P5 source default or immutable launch safety snapshot; no physical
+        calibration claim
+    uncertainty:
+      known: false
+      stddev: null
+    unit: m
+    valid_speed_range:
+    - 0.0
+    - 0.5
+    value: 0.3
+  solver_budget_ms:
+    basis: geometry/lag from current source; NMPC settings are P2 design seeds, not
+      validated gains
+    bounds:
+    - 1.0
+    - 8.0
+    calibration_status: unverified
+    class: C
+    source:
+      kind: source_audit
+      reference: P5 source default or immutable launch safety snapshot; no physical
+        calibration claim
+    uncertainty:
+      known: false
+      stddev: null
+    unit: ms
+    valid_speed_range:
+    - 0.0
+    - 0.5
+    value: 8.0
+  solver_max_iterations:
+    basis: 'Provisional bounded compute candidate: reduce pattern-search sweeps from
+      3 to 2; retain only after latest real-request replay and synthetic 0.4 m/s closed-loop
+      comparison. Not a physical calibration.'
+    bounds:
+    - 1
+    - 5
+    calibration_status: unverified
+    class: C
+    source:
+      kind: source_audit
+      reference: research_runs/p6_latest_run_20261117/README.md; actual pattern-search
+        bound in P6FlatnessNMPC::solve
+    uncertainty:
+      known: false
+      stddev: null
+    unit: '1'
+    valid_speed_range:
+    - 0.0
+    - 0.5
+    value: 2
+  speed_delay:
+    basis: Inherited P5 model seed; search domain only, not identified physical limits
+    bounds:
+    - 0.0
+    - 0.7
+    calibration_status: unverified
+    class: B
+    source:
+      kind: source_audit
+      reference: P5 source default or immutable launch safety snapshot; no physical
+        calibration claim
+    uncertainty:
+      known: false
+      stddev: null
+    unit: s
+    valid_speed_range:
+    - 0.0
+    - 0.5
+    value: 0.2
+  speed_gain:
+    basis: Inherited P5 model seed; search domain only, not identified physical limits
+    bounds:
+    - 0.5
+    - 1.5
+    calibration_status: unverified
+    class: B
+    source:
+      kind: source_audit
+      reference: P5 source default or immutable launch safety snapshot; no physical
+        calibration claim
+    uncertainty:
+      known: false
+      stddev: null
+    unit: '1'
+    valid_speed_range:
+    - 0.0
+    - 0.5
+    value: 1.0
+  speed_tau:
+    basis: Inherited P5 model seed; search domain only, not identified physical limits
+    bounds:
+    - 0.05
+    - 1.0
+    calibration_status: unverified
+    class: B
+    source:
+      kind: source_audit
+      reference: P5 source default or immutable launch safety snapshot; no physical
+        calibration claim
+    uncertainty:
+      known: false
+      stddev: null
+    unit: s
+    valid_speed_range:
+    - 0.0
+    - 0.5
+    value: 0.2
+  steering_delay:
+    basis: geometry/lag from current source; NMPC settings are P2 design seeds, not
+      validated gains
+    bounds:
+    - 0.0
+    - 0.7
+    calibration_status: unverified
+    class: B
+    source:
+      kind: source_audit
+      reference: P5 source default or immutable launch safety snapshot; no physical
+        calibration claim
+    uncertainty:
+      known: false
+      stddev: null
+    unit: s
+    valid_speed_range:
+    - 0.0
+    - 0.5
+    value: 0.325
+  steering_gain:
+    basis: Inherited P5 model seed; search domain only, not identified physical limits
+    bounds:
+    - 0.5
+    - 1.5
+    calibration_status: unverified
+    class: B
+    source:
+      kind: source_audit
+      reference: P5 source default or immutable launch safety snapshot; no physical
+        calibration claim
+    uncertainty:
+      known: false
+      stddev: null
+    unit: '1'
+    valid_speed_range:
+    - 0.0
+    - 0.5
+    value: 1.0
+  steering_tau:
+    basis: geometry/lag from current source; NMPC settings are P2 design seeds, not
+      validated gains
+    bounds:
+    - 0.05
+    - 1.0
+    calibration_status: unverified
+    class: B
+    source:
+      kind: source_audit
+      reference: P5 source default or immutable launch safety snapshot; no physical
+        calibration claim
+    uncertainty:
+      known: false
+      stddev: null
+    unit: s
+    valid_speed_range:
+    - 0.0
+    - 0.5
+    value: 0.44
+  weight_heading:
+    basis: geometry/lag from current source; NMPC settings are P2 design seeds, not
+      validated gains
+    bounds:
+    - 1.0
+    - 100.0
+    calibration_status: unverified
+    class: C
+    source:
+      kind: source_audit
+      reference: P5 source default or immutable launch safety snapshot; no physical
+        calibration claim
+    uncertainty:
+      known: false
+      stddev: null
+    unit: '1'
+    valid_speed_range:
+    - 0.0
+    - 0.5
+    value: 7.0
+  weight_lateral:
+    basis: geometry/lag from current source; NMPC settings are P2 design seeds, not
+      validated gains
+    bounds:
+    - 1.0
+    - 100.0
+    calibration_status: unverified
+    class: C
+    source:
+      kind: source_audit
+      reference: P5 source default or immutable launch safety snapshot; no physical
+        calibration claim
+    uncertainty:
+      known: false
+      stddev: null
+    unit: '1'
+    valid_speed_range:
+    - 0.0
+    - 0.5
+    value: 26.0
+  weight_smoothness:
+    basis: Retain smoothness24 after single paired candidate32 increased maximum/lateral
+      error; no physical model parameter change.
+    bounds:
+    - 1.0
+    - 100.0
+    calibration_status: unverified
+    class: C
+    source:
+      kind: synthetic
+      reference: research_runs/p6_run2201_optimization_20261118/focused/summary.json
+        (32 rejected)
+    uncertainty:
+      known: false
+      stddev: null
+    unit: '1'
+    valid_speed_range:
+    - 0.0
+    - 0.5
+    value: 24.0
+  weight_speed:
+    basis: Synthetic development selection restores original P6 6/24 performance balance;
+      independent and worst-case gates remain unresolved. Physical model and safety
+      unchanged.
+    bounds:
+    - 1.0
+    - 40.0
+    calibration_status: unverified
+    class: C
+    source:
+      kind: synthetic
+      reference: research_runs/p6_latest_run_20261117/comparison/summary.json; paired
+        synthetic 0.4 m/s development selection informed by real 20:17 request infeasibility
+        diagnosis, not real closed-loop improvement
+    uncertainty:
+      known: false
+      stddev: null
+    unit: '1'
+    valid_speed_range:
+    - 0.0
+    - 0.5
+    value: 6.0
+  wheel_speed_scale:
+    basis: geometry/lag from current source; NMPC settings are P2 design seeds, not
+      validated gains
+    bounds:
+    - 0.001
+    - 0.001
+    calibration_status: unverified
+    class: B
+    source:
+      kind: source_audit
+      reference: P5 source default or immutable launch safety snapshot; no physical
+        calibration claim
+    uncertainty:
+      known: false
+      stddev: null
+    unit: m/s per raw
+    valid_speed_range:
+    - 0.0
+    - 0.5
+    value: 0.001
+  wheelbase:
+    basis: geometry/lag from current source; NMPC settings are P2 design seeds, not
+      validated gains
+    bounds:
+    - 0.6
+    - 0.6
+    calibration_status: unverified
+    class: B
+    source:
+      kind: source_audit
+      reference: P5 source default or immutable launch safety snapshot; no physical
+        calibration claim
+    uncertainty:
+      known: false
+      stddev: null
+    unit: m
+    valid_speed_range:
+    - 0.0
+    - 0.5
+    value: 0.6
+  yaw_gain:
+    basis: geometry/lag from current source; NMPC settings are P2 design seeds, not
+      validated gains
+    bounds:
+    - 0.5
+    - 1.5
+    calibration_status: unverified
+    class: B
+    source:
+      kind: source_audit
+      reference: P5 source default or immutable launch safety snapshot; no physical
+        calibration claim
+    uncertainty:
+      known: false
+      stddev: null
+    unit: '1'
+    valid_speed_range:
+    - 0.0
+    - 0.5
+    value: 1.0
+schema_version: 2
+status: research_unvalidated
+terrain: all
+valid_range:
+  deployment: isolated_simulation_only
+  direction: forward
+  max_speed_mps: 0.5
+version: p6-smooth-gn-local-poll-20261118

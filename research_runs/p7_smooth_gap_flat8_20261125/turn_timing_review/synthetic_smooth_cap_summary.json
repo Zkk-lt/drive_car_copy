@@ -1,0 +1,836 @@
+{
+  "scope": "Synthetic delayed bicycle; uses the production flat8 solver and P5 arbiter with a bounded synthetic fallback; not real-gain identification.",
+  "dynamic_cap": {
+    "profile": "smooth",
+    "scope": "Injected by simulated station in both sides, never changed by candidate."
+  },
+  "hard_command_violations": "Synthetic recovery ceiling 0.50 m/s, acceleration, jerk, steering and steering rate bounds. The operational cap (\u22640.40 m/s) is immutable for NMPC and counted separately for the fallback and plant.",
+  "compiled_binary_sha256": "6846b42bb43e7f6ebbf8f45df2bc942bb4269c9e845aab7788c32055aadeacb9",
+  "ablation_controls": {
+    "old": {
+      "speed_reserve_mps": 0.0,
+      "release_weight": 0.0
+    },
+    "new": {
+      "speed_reserve_mps": 0.035,
+      "release_weight": 2.0
+    }
+  },
+  "comparison": {
+    "straight": {
+      "old": {
+        "ticks": 420,
+        "valid_selected": 397,
+        "solver_timeouts": 14,
+        "hard_command_violations": 0,
+        "physical_above_dynamic_cap": 0,
+        "published_above_dynamic_cap": 9,
+        "reserve_active": 0,
+        "opening_weight_active": 0,
+        "release_weight_peak": 0.0,
+        "reserve_peak_mps": 0.0,
+        "not_selected_reasons": {
+          "flatness_first_command_speed_acceleration_jerk_bounds_empty": 9,
+          "p6_complete_candidate_budget_exceeded": 11,
+          "solver_timeout": 3
+        },
+        "absolute_center_error_p95_m": 0.014948232283876454,
+        "absolute_center_error_max_m": 0.015,
+        "signed_outer_p95_m": 0.00013989055396134963,
+        "center_error_rms_m": 0.006351570601393045,
+        "heading_error_rms_rad": 0.005272388310959098,
+        "absolute_speed_median_mps": 0.3992083748322791,
+        "final_station_m": 4.17,
+        "command_steering_rate_rms_rad_s": 0.07011444213341919,
+        "command_jerk_rms_m_s3": 0.13783095242408844,
+        "solver_ms_p50": 2.8102774999999998,
+        "solver_ms_p95": 6.057414999999998,
+        "solver_ms_p99": 10.867242150000003,
+        "solver_ms_max": 18.96847
+      },
+      "new": {
+        "ticks": 420,
+        "valid_selected": 409,
+        "solver_timeouts": 2,
+        "hard_command_violations": 0,
+        "physical_above_dynamic_cap": 0,
+        "published_above_dynamic_cap": 9,
+        "reserve_active": 0,
+        "opening_weight_active": 0,
+        "release_weight_peak": 0.0,
+        "reserve_peak_mps": 0.0,
+        "not_selected_reasons": {
+          "flatness_first_command_speed_acceleration_jerk_bounds_empty": 9,
+          "p6_complete_candidate_budget_exceeded": 2
+        },
+        "absolute_center_error_p95_m": 0.014948232283876454,
+        "absolute_center_error_max_m": 0.015,
+        "signed_outer_p95_m": 7.537802657289395e-05,
+        "center_error_rms_m": 0.006256416802656723,
+        "heading_error_rms_rad": 0.005403269554189198,
+        "absolute_speed_median_mps": 0.39912260608642014,
+        "final_station_m": 4.17,
+        "command_steering_rate_rms_rad_s": 0.07019010654332593,
+        "command_jerk_rms_m_s3": 0.13749258679468826,
+        "solver_ms_p50": 2.7884184999999997,
+        "solver_ms_p95": 4.166961,
+        "solver_ms_p99": 4.88881555,
+        "solver_ms_max": 14.959497
+      },
+      "station_matched": {
+        "common_bins_of_2_cm": 209,
+        "center_error_rms_m": [
+          0.006282999161720398,
+          0.0061863219375599635
+        ],
+        "absolute_center_error_p95_m": [
+          0.014938614076491078,
+          0.014938614076491078
+        ],
+        "outward_signed_p95_m": [
+          0.00013978356077016965,
+          7.50984352688005e-05
+        ],
+        "order": [
+          "old",
+          "new"
+        ]
+      },
+      "phases": {
+        "control": {
+          "old": {
+            "ticks": 420,
+            "valid_selected": 397,
+            "solver_timeouts": 14,
+            "hard_command_violations": 0,
+            "physical_above_dynamic_cap": 0,
+            "published_above_dynamic_cap": 9,
+            "reserve_active": 0,
+            "opening_weight_active": 0,
+            "release_weight_peak": 0.0,
+            "reserve_peak_mps": 0.0,
+            "not_selected_reasons": {
+              "flatness_first_command_speed_acceleration_jerk_bounds_empty": 9,
+              "p6_complete_candidate_budget_exceeded": 11,
+              "solver_timeout": 3
+            },
+            "absolute_center_error_p95_m": 0.014948232283876454,
+            "absolute_center_error_max_m": 0.015,
+            "signed_outer_p95_m": 0.00013989055396134963,
+            "center_error_rms_m": 0.006351570601393045,
+            "heading_error_rms_rad": 0.005272388310959098,
+            "absolute_speed_median_mps": 0.3992083748322791,
+            "final_station_m": 4.17,
+            "command_steering_rate_rms_rad_s": 0.07011444213341919,
+            "command_jerk_rms_m_s3": 0.13783095242408844,
+            "solver_ms_p50": 2.8102774999999998,
+            "solver_ms_p95": 6.057414999999998,
+            "solver_ms_p99": 10.867242150000003,
+            "solver_ms_max": 18.96847
+          },
+          "new": {
+            "ticks": 420,
+            "valid_selected": 409,
+            "solver_timeouts": 2,
+            "hard_command_violations": 0,
+            "physical_above_dynamic_cap": 0,
+            "published_above_dynamic_cap": 9,
+            "reserve_active": 0,
+            "opening_weight_active": 0,
+            "release_weight_peak": 0.0,
+            "reserve_peak_mps": 0.0,
+            "not_selected_reasons": {
+              "flatness_first_command_speed_acceleration_jerk_bounds_empty": 9,
+              "p6_complete_candidate_budget_exceeded": 2
+            },
+            "absolute_center_error_p95_m": 0.014948232283876454,
+            "absolute_center_error_max_m": 0.015,
+            "signed_outer_p95_m": 7.537802657289395e-05,
+            "center_error_rms_m": 0.006256416802656723,
+            "heading_error_rms_rad": 0.005403269554189198,
+            "absolute_speed_median_mps": 0.39912260608642014,
+            "final_station_m": 4.17,
+            "command_steering_rate_rms_rad_s": 0.07019010654332593,
+            "command_jerk_rms_m_s3": 0.13749258679468826,
+            "solver_ms_p50": 2.7884184999999997,
+            "solver_ms_p95": 4.166961,
+            "solver_ms_p99": 4.88881555,
+            "solver_ms_max": 14.959497
+          }
+        }
+      },
+      "exact_commands_and_station": false
+    },
+    "steady_right": {
+      "old": {
+        "ticks": 420,
+        "valid_selected": 391,
+        "solver_timeouts": 28,
+        "hard_command_violations": 0,
+        "physical_above_dynamic_cap": 0,
+        "published_above_dynamic_cap": 0,
+        "reserve_active": 0,
+        "opening_weight_active": 0,
+        "release_weight_peak": 0.0,
+        "reserve_peak_mps": 0.0,
+        "not_selected_reasons": {
+          "p6_complete_candidate_budget_exceeded": 23,
+          "solver_timeout": 5,
+          "flatness_budget_without_feasible": 1
+        },
+        "absolute_center_error_p95_m": 0.014040191285397385,
+        "absolute_center_error_max_m": 0.015,
+        "signed_outer_p95_m": 0.014040191285397385,
+        "center_error_rms_m": 0.005261317783226924,
+        "heading_error_rms_rad": 0.005949072887515498,
+        "absolute_speed_median_mps": 0.3971186183199153,
+        "final_station_m": 4.17,
+        "command_steering_rate_rms_rad_s": 0.06399058046184695,
+        "command_jerk_rms_m_s3": 0.12807918988858036,
+        "solver_ms_p50": 3.9261055000000002,
+        "solver_ms_p95": 8.249288999999997,
+        "solver_ms_p99": 14.692518750000001,
+        "solver_ms_max": 29.743084
+      },
+      "new": {
+        "ticks": 420,
+        "valid_selected": 417,
+        "solver_timeouts": 0,
+        "hard_command_violations": 0,
+        "physical_above_dynamic_cap": 0,
+        "published_above_dynamic_cap": 3,
+        "reserve_active": 0,
+        "opening_weight_active": 0,
+        "release_weight_peak": 0.0,
+        "reserve_peak_mps": 0.0,
+        "not_selected_reasons": {
+          "flatness_first_command_speed_acceleration_jerk_bounds_empty": 3
+        },
+        "absolute_center_error_p95_m": 0.01401415377608561,
+        "absolute_center_error_max_m": 0.015,
+        "signed_outer_p95_m": 0.01401415377608561,
+        "center_error_rms_m": 0.005206929207799001,
+        "heading_error_rms_rad": 0.00607879353867583,
+        "absolute_speed_median_mps": 0.39713238852071875,
+        "final_station_m": 4.165,
+        "command_steering_rate_rms_rad_s": 0.036285451847971946,
+        "command_jerk_rms_m_s3": 0.1095526018689525,
+        "solver_ms_p50": 4.0876459999999994,
+        "solver_ms_p95": 4.8319317999999996,
+        "solver_ms_p99": 5.829899320000001,
+        "solver_ms_max": 6.235566
+      },
+      "station_matched": {
+        "common_bins_of_2_cm": 209,
+        "center_error_rms_m": [
+          0.0052217672973159,
+          0.00514456308430029
+        ],
+        "absolute_center_error_p95_m": [
+          0.013920679713566059,
+          0.013889312523591782
+        ],
+        "outward_signed_p95_m": [
+          0.013920679713566059,
+          0.013889312523591782
+        ],
+        "order": [
+          "old",
+          "new"
+        ]
+      },
+      "phases": {
+        "control": {
+          "old": {
+            "ticks": 420,
+            "valid_selected": 391,
+            "solver_timeouts": 28,
+            "hard_command_violations": 0,
+            "physical_above_dynamic_cap": 0,
+            "published_above_dynamic_cap": 0,
+            "reserve_active": 0,
+            "opening_weight_active": 0,
+            "release_weight_peak": 0.0,
+            "reserve_peak_mps": 0.0,
+            "not_selected_reasons": {
+              "p6_complete_candidate_budget_exceeded": 23,
+              "solver_timeout": 5,
+              "flatness_budget_without_feasible": 1
+            },
+            "absolute_center_error_p95_m": 0.014040191285397385,
+            "absolute_center_error_max_m": 0.015,
+            "signed_outer_p95_m": 0.014040191285397385,
+            "center_error_rms_m": 0.005261317783226924,
+            "heading_error_rms_rad": 0.005949072887515498,
+            "absolute_speed_median_mps": 0.3971186183199153,
+            "final_station_m": 4.17,
+            "command_steering_rate_rms_rad_s": 0.06399058046184695,
+            "command_jerk_rms_m_s3": 0.12807918988858036,
+            "solver_ms_p50": 3.9261055000000002,
+            "solver_ms_p95": 8.249288999999997,
+            "solver_ms_p99": 14.692518750000001,
+            "solver_ms_max": 29.743084
+          },
+          "new": {
+            "ticks": 420,
+            "valid_selected": 417,
+            "solver_timeouts": 0,
+            "hard_command_violations": 0,
+            "physical_above_dynamic_cap": 0,
+            "published_above_dynamic_cap": 3,
+            "reserve_active": 0,
+            "opening_weight_active": 0,
+            "release_weight_peak": 0.0,
+            "reserve_peak_mps": 0.0,
+            "not_selected_reasons": {
+              "flatness_first_command_speed_acceleration_jerk_bounds_empty": 3
+            },
+            "absolute_center_error_p95_m": 0.01401415377608561,
+            "absolute_center_error_max_m": 0.015,
+            "signed_outer_p95_m": 0.01401415377608561,
+            "center_error_rms_m": 0.005206929207799001,
+            "heading_error_rms_rad": 0.00607879353867583,
+            "absolute_speed_median_mps": 0.39713238852071875,
+            "final_station_m": 4.165,
+            "command_steering_rate_rms_rad_s": 0.036285451847971946,
+            "command_jerk_rms_m_s3": 0.1095526018689525,
+            "solver_ms_p50": 4.0876459999999994,
+            "solver_ms_p95": 4.8319317999999996,
+            "solver_ms_p99": 5.829899320000001,
+            "solver_ms_max": 6.235566
+          }
+        }
+      },
+      "exact_commands_and_station": false
+    },
+    "tight_open_left": {
+      "old": {
+        "ticks": 420,
+        "valid_selected": 246,
+        "solver_timeouts": 2,
+        "hard_command_violations": 0,
+        "physical_above_dynamic_cap": 145,
+        "published_above_dynamic_cap": 171,
+        "reserve_active": 0,
+        "opening_weight_active": 0,
+        "release_weight_peak": 0.0,
+        "reserve_peak_mps": 0.0,
+        "not_selected_reasons": {
+          "flatness_first_command_speed_acceleration_jerk_bounds_empty": 21,
+          "flatness_uncontrollable_history_infeasible": 6,
+          "flatness_initial_speed_above_dynamic_cap": 145,
+          "p6_complete_candidate_budget_exceeded": 2
+        },
+        "absolute_center_error_p95_m": 0.01818233302798281,
+        "absolute_center_error_max_m": 0.01846609679616439,
+        "signed_outer_p95_m": 0.01408518170205958,
+        "center_error_rms_m": 0.009856780154550446,
+        "heading_error_rms_rad": 0.03618000223815619,
+        "absolute_speed_median_mps": 0.3975190860367197,
+        "final_station_m": 4.095,
+        "command_steering_rate_rms_rad_s": 0.09726891434747358,
+        "command_jerk_rms_m_s3": 0.20148641229621853,
+        "solver_ms_p50": 3.805249,
+        "solver_ms_p95": 5.14819815,
+        "solver_ms_p99": 6.1097612,
+        "solver_ms_max": 14.960746
+      },
+      "new": {
+        "ticks": 420,
+        "valid_selected": 242,
+        "solver_timeouts": 3,
+        "hard_command_violations": 0,
+        "physical_above_dynamic_cap": 145,
+        "published_above_dynamic_cap": 174,
+        "reserve_active": 55,
+        "opening_weight_active": 0,
+        "release_weight_peak": 0.0,
+        "reserve_peak_mps": 0.03500000000000003,
+        "not_selected_reasons": {
+          "flatness_first_command_speed_acceleration_jerk_bounds_empty": 24,
+          "flatness_uncontrollable_history_infeasible": 6,
+          "flatness_initial_speed_above_dynamic_cap": 145,
+          "p6_complete_candidate_budget_exceeded": 2,
+          "solver_timeout": 1
+        },
+        "absolute_center_error_p95_m": 0.01818233302798281,
+        "absolute_center_error_max_m": 0.01846609679616439,
+        "signed_outer_p95_m": 0.01408518170205958,
+        "center_error_rms_m": 0.009688894881955085,
+        "heading_error_rms_rad": 0.03658324337579673,
+        "absolute_speed_median_mps": 0.39880559124083637,
+        "final_station_m": 4.095,
+        "command_steering_rate_rms_rad_s": 0.12214238738609405,
+        "command_jerk_rms_m_s3": 0.19585175611567718,
+        "solver_ms_p50": 3.940184,
+        "solver_ms_p95": 5.098472749999998,
+        "solver_ms_p99": 5.96029706,
+        "solver_ms_max": 13.053667
+      },
+      "station_matched": {
+        "common_bins_of_2_cm": 205,
+        "center_error_rms_m": [
+          0.009677629998903313,
+          0.009504054061610824
+        ],
+        "absolute_center_error_p95_m": [
+          0.018136129506813068,
+          0.018136129506813068
+        ],
+        "outward_signed_p95_m": [
+          0.014011567523866019,
+          0.014011567523866019
+        ],
+        "order": [
+          "old",
+          "new"
+        ]
+      },
+      "phases": {
+        "approach": {
+          "old": {
+            "ticks": 34,
+            "valid_selected": 20,
+            "solver_timeouts": 0,
+            "hard_command_violations": 0,
+            "physical_above_dynamic_cap": 0,
+            "published_above_dynamic_cap": 14,
+            "reserve_active": 0,
+            "opening_weight_active": 0,
+            "release_weight_peak": 0.0,
+            "reserve_peak_mps": 0.0,
+            "not_selected_reasons": {
+              "flatness_first_command_speed_acceleration_jerk_bounds_empty": 14
+            },
+            "absolute_center_error_p95_m": 0.01493709481290723,
+            "absolute_center_error_max_m": 0.015,
+            "signed_outer_p95_m": 0.01493709481290723,
+            "center_error_rms_m": 0.014202355076283734,
+            "heading_error_rms_rad": 0.0046861267491061604,
+            "absolute_speed_median_mps": 0.3810593616640571,
+            "final_station_m": 0.315,
+            "command_steering_rate_rms_rad_s": 0.07355629641494699,
+            "command_jerk_rms_m_s3": 0.4365960743419674,
+            "solver_ms_p50": 4.557374,
+            "solver_ms_p95": 5.9510768999999994,
+            "solver_ms_p99": 6.07163995,
+            "solver_ms_max": 6.110278
+          },
+          "new": {
+            "ticks": 34,
+            "valid_selected": 20,
+            "solver_timeouts": 0,
+            "hard_command_violations": 0,
+            "physical_above_dynamic_cap": 0,
+            "published_above_dynamic_cap": 14,
+            "reserve_active": 8,
+            "opening_weight_active": 0,
+            "release_weight_peak": 0.0,
+            "reserve_peak_mps": 0.02590100912282167,
+            "not_selected_reasons": {
+              "flatness_first_command_speed_acceleration_jerk_bounds_empty": 14
+            },
+            "absolute_center_error_p95_m": 0.01493709481290723,
+            "absolute_center_error_max_m": 0.015,
+            "signed_outer_p95_m": 0.01493709481290723,
+            "center_error_rms_m": 0.014202355076283734,
+            "heading_error_rms_rad": 0.0046861267491061604,
+            "absolute_speed_median_mps": 0.3810593616640571,
+            "final_station_m": 0.315,
+            "command_steering_rate_rms_rad_s": 0.07355629641494699,
+            "command_jerk_rms_m_s3": 0.4365960743419674,
+            "solver_ms_p50": 4.371728,
+            "solver_ms_p95": 5.7023884,
+            "solver_ms_p99": 5.93485542,
+            "solver_ms_max": 5.994825
+          }
+        },
+        "tighten": {
+          "old": {
+            "ticks": 138,
+            "valid_selected": 0,
+            "solver_timeouts": 0,
+            "hard_command_violations": 0,
+            "physical_above_dynamic_cap": 125,
+            "published_above_dynamic_cap": 138,
+            "reserve_active": 0,
+            "opening_weight_active": 0,
+            "release_weight_peak": 0.0,
+            "reserve_peak_mps": 0.0,
+            "not_selected_reasons": {
+              "flatness_first_command_speed_acceleration_jerk_bounds_empty": 7,
+              "flatness_uncontrollable_history_infeasible": 6,
+              "flatness_initial_speed_above_dynamic_cap": 125
+            },
+            "absolute_center_error_p95_m": 0.017676666387351832,
+            "absolute_center_error_max_m": 0.01818165817589462,
+            "signed_outer_p95_m": 0.011797904559795845,
+            "center_error_rms_m": 0.010657567564782386,
+            "heading_error_rms_rad": 0.0501026805980028,
+            "absolute_speed_median_mps": 0.39853240681578483,
+            "final_station_m": 1.665,
+            "command_steering_rate_rms_rad_s": 0.12824794223470556,
+            "command_jerk_rms_m_s3": 0.038627020622345354,
+            "solver_ms_p50": 0.0398955,
+            "solver_ms_p95": 0.04814185000000001,
+            "solver_ms_p99": 0.24621449999999998,
+            "solver_ms_max": 0.269174
+          },
+          "new": {
+            "ticks": 138,
+            "valid_selected": 0,
+            "solver_timeouts": 0,
+            "hard_command_violations": 0,
+            "physical_above_dynamic_cap": 125,
+            "published_above_dynamic_cap": 138,
+            "reserve_active": 47,
+            "opening_weight_active": 0,
+            "release_weight_peak": 0.0,
+            "reserve_peak_mps": 0.03500000000000003,
+            "not_selected_reasons": {
+              "flatness_first_command_speed_acceleration_jerk_bounds_empty": 7,
+              "flatness_uncontrollable_history_infeasible": 6,
+              "flatness_initial_speed_above_dynamic_cap": 125
+            },
+            "absolute_center_error_p95_m": 0.017676666387351832,
+            "absolute_center_error_max_m": 0.01818165817589462,
+            "signed_outer_p95_m": 0.011797904559795845,
+            "center_error_rms_m": 0.010657567564782386,
+            "heading_error_rms_rad": 0.0501026805980028,
+            "absolute_speed_median_mps": 0.39853240681578483,
+            "final_station_m": 1.665,
+            "command_steering_rate_rms_rad_s": 0.12824794223470556,
+            "command_jerk_rms_m_s3": 0.038627020622345354,
+            "solver_ms_p50": 0.0285845,
+            "solver_ms_p95": 0.046192800000000034,
+            "solver_ms_p99": 0.24012591999999996,
+            "solver_ms_max": 0.245681
+          }
+        },
+        "open": {
+          "old": {
+            "ticks": 248,
+            "valid_selected": 226,
+            "solver_timeouts": 2,
+            "hard_command_violations": 0,
+            "physical_above_dynamic_cap": 20,
+            "published_above_dynamic_cap": 19,
+            "reserve_active": 0,
+            "opening_weight_active": 0,
+            "release_weight_peak": 0.0,
+            "reserve_peak_mps": 0.0,
+            "not_selected_reasons": {
+              "flatness_initial_speed_above_dynamic_cap": 20,
+              "p6_complete_candidate_budget_exceeded": 2
+            },
+            "absolute_center_error_p95_m": 0.018367485857950037,
+            "absolute_center_error_max_m": 0.01846609679616439,
+            "signed_outer_p95_m": -0.0005179602974442205,
+            "center_error_rms_m": 0.008583784659783258,
+            "heading_error_rms_rad": 0.02858291533323329,
+            "absolute_speed_median_mps": 0.3981005782423801,
+            "final_station_m": 4.095,
+            "command_steering_rate_rms_rad_s": 0.07875673575350099,
+            "command_jerk_rms_m_s3": 0.20823155730949444,
+            "solver_ms_p50": 4.0545825,
+            "solver_ms_p95": 5.159299949999999,
+            "solver_ms_p99": 6.985519170000002,
+            "solver_ms_max": 14.960746
+          },
+          "new": {
+            "ticks": 248,
+            "valid_selected": 222,
+            "solver_timeouts": 3,
+            "hard_command_violations": 0,
+            "physical_above_dynamic_cap": 20,
+            "published_above_dynamic_cap": 22,
+            "reserve_active": 0,
+            "opening_weight_active": 0,
+            "release_weight_peak": 0.0,
+            "reserve_peak_mps": 0.0,
+            "not_selected_reasons": {
+              "flatness_initial_speed_above_dynamic_cap": 20,
+              "p6_complete_candidate_budget_exceeded": 2,
+              "flatness_first_command_speed_acceleration_jerk_bounds_empty": 3,
+              "solver_timeout": 1
+            },
+            "absolute_center_error_p95_m": 0.018367485857950037,
+            "absolute_center_error_max_m": 0.01846609679616439,
+            "signed_outer_p95_m": -0.00024048114447902395,
+            "center_error_rms_m": 0.008253732303590491,
+            "heading_error_rms_rad": 0.029439321986182033,
+            "absolute_speed_median_mps": 0.399119356246986,
+            "final_station_m": 4.095,
+            "command_steering_rate_rms_rad_s": 0.12434035382291,
+            "command_jerk_rms_m_s3": 0.19888723672285277,
+            "solver_ms_p50": 4.2102585,
+            "solver_ms_p95": 5.2469635499999985,
+            "solver_ms_p99": 7.197086380000002,
+            "solver_ms_max": 13.053667
+          }
+        }
+      }
+    },
+    "tight_open_right": {
+      "old": {
+        "ticks": 420,
+        "valid_selected": 248,
+        "solver_timeouts": 0,
+        "hard_command_violations": 0,
+        "physical_above_dynamic_cap": 145,
+        "published_above_dynamic_cap": 171,
+        "reserve_active": 0,
+        "opening_weight_active": 0,
+        "release_weight_peak": 0.0,
+        "reserve_peak_mps": 0.0,
+        "not_selected_reasons": {
+          "flatness_first_command_speed_acceleration_jerk_bounds_empty": 21,
+          "flatness_uncontrollable_history_infeasible": 6,
+          "flatness_initial_speed_above_dynamic_cap": 145
+        },
+        "absolute_center_error_p95_m": 0.018182333027982844,
+        "absolute_center_error_max_m": 0.01846609679616439,
+        "signed_outer_p95_m": 0.01408518170205958,
+        "center_error_rms_m": 0.009907391631892625,
+        "heading_error_rms_rad": 0.03609665413621944,
+        "absolute_speed_median_mps": 0.39787839547605,
+        "final_station_m": 4.095,
+        "command_steering_rate_rms_rad_s": 0.09393604976982932,
+        "command_jerk_rms_m_s3": 0.19664014844629235,
+        "solver_ms_p50": 3.9262865,
+        "solver_ms_p95": 4.964442449999997,
+        "solver_ms_p99": 5.696260540000001,
+        "solver_ms_max": 6.085169
+      },
+      "new": {
+        "ticks": 420,
+        "valid_selected": 248,
+        "solver_timeouts": 0,
+        "hard_command_violations": 0,
+        "physical_above_dynamic_cap": 145,
+        "published_above_dynamic_cap": 171,
+        "reserve_active": 55,
+        "opening_weight_active": 0,
+        "release_weight_peak": 0.0,
+        "reserve_peak_mps": 0.03500000000000003,
+        "not_selected_reasons": {
+          "flatness_first_command_speed_acceleration_jerk_bounds_empty": 21,
+          "flatness_uncontrollable_history_infeasible": 6,
+          "flatness_initial_speed_above_dynamic_cap": 145
+        },
+        "absolute_center_error_p95_m": 0.018182333027981754,
+        "absolute_center_error_max_m": 0.01846609679616318,
+        "signed_outer_p95_m": 0.01408518170205959,
+        "center_error_rms_m": 0.009907391631894387,
+        "heading_error_rms_rad": 0.036096654136221554,
+        "absolute_speed_median_mps": 0.39787839547600906,
+        "final_station_m": 4.095,
+        "command_steering_rate_rms_rad_s": 0.09393604976979353,
+        "command_jerk_rms_m_s3": 0.19664014844404426,
+        "solver_ms_p50": 3.6500899999999996,
+        "solver_ms_p95": 4.962975249999998,
+        "solver_ms_p99": 5.53366992,
+        "solver_ms_max": 6.064693
+      },
+      "station_matched": {
+        "common_bins_of_2_cm": 205,
+        "center_error_rms_m": [
+          0.009730429776617013,
+          0.00973042977661888
+        ],
+        "absolute_center_error_p95_m": [
+          0.01813612950681307,
+          0.018136129506811798
+        ],
+        "outward_signed_p95_m": [
+          0.014011567523866019,
+          0.014011567523866033
+        ],
+        "order": [
+          "old",
+          "new"
+        ]
+      },
+      "phases": {
+        "approach": {
+          "old": {
+            "ticks": 34,
+            "valid_selected": 20,
+            "solver_timeouts": 0,
+            "hard_command_violations": 0,
+            "physical_above_dynamic_cap": 0,
+            "published_above_dynamic_cap": 14,
+            "reserve_active": 0,
+            "opening_weight_active": 0,
+            "release_weight_peak": 0.0,
+            "reserve_peak_mps": 0.0,
+            "not_selected_reasons": {
+              "flatness_first_command_speed_acceleration_jerk_bounds_empty": 14
+            },
+            "absolute_center_error_p95_m": 0.01493709481290723,
+            "absolute_center_error_max_m": 0.015,
+            "signed_outer_p95_m": 0.01493709481290723,
+            "center_error_rms_m": 0.014202355076283734,
+            "heading_error_rms_rad": 0.004686126749106163,
+            "absolute_speed_median_mps": 0.3810593616640571,
+            "final_station_m": 0.315,
+            "command_steering_rate_rms_rad_s": 0.07355629641495058,
+            "command_jerk_rms_m_s3": 0.4365960743419403,
+            "solver_ms_p50": 4.4724565,
+            "solver_ms_p95": 5.899826699999999,
+            "solver_ms_p99": 5.94564336,
+            "solver_ms_max": 5.949474
+          },
+          "new": {
+            "ticks": 34,
+            "valid_selected": 20,
+            "solver_timeouts": 0,
+            "hard_command_violations": 0,
+            "physical_above_dynamic_cap": 0,
+            "published_above_dynamic_cap": 14,
+            "reserve_active": 8,
+            "opening_weight_active": 0,
+            "release_weight_peak": 0.0,
+            "reserve_peak_mps": 0.02590100912282167,
+            "not_selected_reasons": {
+              "flatness_first_command_speed_acceleration_jerk_bounds_empty": 14
+            },
+            "absolute_center_error_p95_m": 0.01493709481290723,
+            "absolute_center_error_max_m": 0.015,
+            "signed_outer_p95_m": 0.01493709481290723,
+            "center_error_rms_m": 0.014202355076283747,
+            "heading_error_rms_rad": 0.004686126749106119,
+            "absolute_speed_median_mps": 0.3810593616640572,
+            "final_station_m": 0.315,
+            "command_steering_rate_rms_rad_s": 0.07355629641496231,
+            "command_jerk_rms_m_s3": 0.4365960743423408,
+            "solver_ms_p50": 4.449861,
+            "solver_ms_p95": 6.0425283499999995,
+            "solver_ms_p99": 6.0626041,
+            "solver_ms_max": 6.064693
+          }
+        },
+        "tighten": {
+          "old": {
+            "ticks": 138,
+            "valid_selected": 0,
+            "solver_timeouts": 0,
+            "hard_command_violations": 0,
+            "physical_above_dynamic_cap": 125,
+            "published_above_dynamic_cap": 138,
+            "reserve_active": 0,
+            "opening_weight_active": 0,
+            "release_weight_peak": 0.0,
+            "reserve_peak_mps": 0.0,
+            "not_selected_reasons": {
+              "flatness_first_command_speed_acceleration_jerk_bounds_empty": 7,
+              "flatness_uncontrollable_history_infeasible": 6,
+              "flatness_initial_speed_above_dynamic_cap": 125
+            },
+            "absolute_center_error_p95_m": 0.017676666387351832,
+            "absolute_center_error_max_m": 0.01818165817589466,
+            "signed_outer_p95_m": 0.011797904559795834,
+            "center_error_rms_m": 0.01065756756478239,
+            "heading_error_rms_rad": 0.050102680598002804,
+            "absolute_speed_median_mps": 0.39853240681578495,
+            "final_station_m": 1.665,
+            "command_steering_rate_rms_rad_s": 0.12824794223470562,
+            "command_jerk_rms_m_s3": 0.038627020622345354,
+            "solver_ms_p50": 0.0338145,
+            "solver_ms_p95": 0.04355165000000006,
+            "solver_ms_p99": 0.21828816999999967,
+            "solver_ms_max": 0.248575
+          },
+          "new": {
+            "ticks": 138,
+            "valid_selected": 0,
+            "solver_timeouts": 0,
+            "hard_command_violations": 0,
+            "physical_above_dynamic_cap": 125,
+            "published_above_dynamic_cap": 138,
+            "reserve_active": 47,
+            "opening_weight_active": 0,
+            "release_weight_peak": 0.0,
+            "reserve_peak_mps": 0.03500000000000003,
+            "not_selected_reasons": {
+              "flatness_first_command_speed_acceleration_jerk_bounds_empty": 7,
+              "flatness_uncontrollable_history_infeasible": 6,
+              "flatness_initial_speed_above_dynamic_cap": 125
+            },
+            "absolute_center_error_p95_m": 0.01767666638735084,
+            "absolute_center_error_max_m": 0.01818165817589358,
+            "signed_outer_p95_m": 0.011797904559795895,
+            "center_error_rms_m": 0.010657567564782023,
+            "heading_error_rms_rad": 0.050102680598002915,
+            "absolute_speed_median_mps": 0.3985324068157868,
+            "final_station_m": 1.665,
+            "command_steering_rate_rms_rad_s": 0.12824794223470568,
+            "command_jerk_rms_m_s3": 0.03862702062234588,
+            "solver_ms_p50": 0.041804499999999994,
+            "solver_ms_p95": 0.051937750000000005,
+            "solver_ms_p99": 0.26051353,
+            "solver_ms_max": 0.307344
+          }
+        },
+        "open": {
+          "old": {
+            "ticks": 248,
+            "valid_selected": 228,
+            "solver_timeouts": 0,
+            "hard_command_violations": 0,
+            "physical_above_dynamic_cap": 20,
+            "published_above_dynamic_cap": 19,
+            "reserve_active": 0,
+            "opening_weight_active": 0,
+            "release_weight_peak": 0.0,
+            "reserve_peak_mps": 0.0,
+            "not_selected_reasons": {
+              "flatness_initial_speed_above_dynamic_cap": 20
+            },
+            "absolute_center_error_p95_m": 0.01836748585795005,
+            "absolute_center_error_max_m": 0.01846609679616439,
+            "signed_outer_p95_m": -0.0006290380630371941,
+            "center_error_rms_m": 0.008681901016576616,
+            "heading_error_rms_rad": 0.028403888935169878,
+            "absolute_speed_median_mps": 0.3982611980654107,
+            "final_station_m": 4.095,
+            "command_steering_rate_rms_rad_s": 0.07156537570016054,
+            "command_jerk_rms_m_s3": 0.20020470845741725,
+            "solver_ms_p50": 4.23446,
+            "solver_ms_p95": 4.996019849999999,
+            "solver_ms_p99": 5.28786588,
+            "solver_ms_max": 6.085169
+          },
+          "new": {
+            "ticks": 248,
+            "valid_selected": 228,
+            "solver_timeouts": 0,
+            "hard_command_violations": 0,
+            "physical_above_dynamic_cap": 20,
+            "published_above_dynamic_cap": 19,
+            "reserve_active": 0,
+            "opening_weight_active": 0,
+            "release_weight_peak": 0.0,
+            "reserve_peak_mps": 0.0,
+            "not_selected_reasons": {
+              "flatness_initial_speed_above_dynamic_cap": 20
+            },
+            "absolute_center_error_p95_m": 0.01836748585794884,
+            "absolute_center_error_max_m": 0.01846609679616318,
+            "signed_outer_p95_m": -0.0006290380632569527,
+            "center_error_rms_m": 0.008681901016580269,
+            "heading_error_rms_rad": 0.028403888935174322,
+            "absolute_speed_median_mps": 0.3982611980653893,
+            "final_station_m": 4.095,
+            "command_steering_rate_rms_rad_s": 0.0715653757000792,
+            "command_jerk_rms_m_s3": 0.20020470845355168,
+            "solver_ms_p50": 3.981013,
+            "solver_ms_p95": 4.63871855,
+            "solver_ms_p99": 5.09313978,
+            "solver_ms_max": 5.153531
+          }
+        }
+      }
+    }
+  }
+}

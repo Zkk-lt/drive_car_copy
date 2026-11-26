@@ -1,0 +1,24 @@
+<launch>
+  <!-- No drivers or real command topic. Fresh separate ROS master required. -->
+  <arg name="run_id"/>
+  <arg name="runtime_yaml"/>
+  <arg name="config_hash"/>
+  <param name="/control_research/run_id" value="$(arg run_id)"/>
+  <node pkg="move_car" type="control_pub" name="p5_unified_controller" output="screen">
+    <param name="cmd_topic" value="/control_research/p5_test/command"/>
+    <param name="p5_mode" value="legacy_slqr"/>
+    <param name="p5_isolated_test" value="true"/>
+    <param name="p5_allow_test_nmpc" value="false"/>
+    <param name="p5_nominal_state_contract" value="false"/>
+    <param name="p5_enable_adaptation" value="false"/>
+    <param name="p5_diagnostics_enabled" value="true"/>
+    <param name="p5_config_hash" value="$(arg config_hash)"/>
+    <param name="enable_debug_csv_logs" value="false"/>
+  </node>
+  <node pkg="move_car" type="p5_nmpc_worker_node" name="p5_nmpc_worker" output="screen">
+    <rosparam command="load" file="$(arg runtime_yaml)"/>
+    <param name="run_id" value="$(arg run_id)"/>
+    <param name="research_backend" value="original12"/>
+    <param name="enable_adaptation" value="false"/>
+  </node>
+</launch>

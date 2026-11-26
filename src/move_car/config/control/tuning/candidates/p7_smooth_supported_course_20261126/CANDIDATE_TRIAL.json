@@ -1,0 +1,20 @@
+{
+  "algorithm": "flat_nmpc_slqr",
+  "automatic_promotion": false,
+  "evidence": [
+    "/home/ubuntu/drive_car_copy/research_runs/p7_smooth_gap_flat8_20261125/straight_sway_review/SOFTWARE_ACCEPTANCE.json",
+    "/home/ubuntu/drive_car_copy/research_runs/p7_smooth_gap_flat8_20261125/straight_sway_review/private_ros.json",
+    "/home/ubuntu/drive_car_copy/research_runs/p7_smooth_gap_flat8_20261125/straight_sway_review/real_course_replay_summary.json",
+    "/home/ubuntu/drive_car_copy/research_runs/p7_smooth_gap_flat8_20261125/straight_sway_review/synthetic_connector_summary.json",
+    "/home/ubuntu/drive_car_copy/research_runs/p7_smooth_gap_flat8_20261125/straight_sway_review/REAL_SWAY_WINDOWS.md"
+  ],
+  "kind": "operator_supervised_unvalidated_candidate",
+  "safety_limits_unchanged": true,
+  "schema_version": 1,
+  "software_acceptance": {
+    "path": "/home/ubuntu/drive_car_copy/research_runs/p7_smooth_gap_flat8_20261125/straight_sway_review/SOFTWARE_ACCEPTANCE.json",
+    "sha256": "8ce436a8175d7aa58eaa3ca9099cbd505dca697adadfdda114223d742ed21990"
+  },
+  "terrain": "smooth",
+  "validated_deployment": false
+}

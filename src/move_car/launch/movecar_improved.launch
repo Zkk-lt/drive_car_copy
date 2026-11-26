@@ -1,6 +1,11 @@
 <?xml version="1.0"?>
 <launch>
-  <node pkg="move_car" type="control_pub" name="publish_speed_turn" output="screen">
+  <arg name="smooth" default="true"/>
+  <arg name="trial_dir" default="$(find move_car)/.smooth_trial"/>
+  <arg name="direct_preflight" default="true"/>
+  <arg name="smooth_preflight" value="" unless="$(eval arg('smooth') and arg('direct_preflight'))"/>
+  <arg name="smooth_preflight" value="$(find move_car)/scripts/smooth_launch_preflight.py control &quot;$(arg trial_dir)&quot;" if="$(eval arg('smooth') and arg('direct_preflight'))"/>
+  <node pkg="move_car" type="control_pub" name="publish_speed_turn" output="screen" launch-prefix="$(arg smooth_preflight)">
     <!-- Topics -->
     <param name="reference_topic" value="/planner/reference_path"/>
     <param name="reference_status_topic" value="/planner/reference_status"/>
@@ -506,4 +511,11 @@
     <param name="stale_path_stop" value="true"/>
     <param name="publish_zero_on_stop" value="false"/>
   </node>
+  <group if="$(arg smooth)">
+    <rosparam command="load" file="$(arg trial_dir)/controller.yaml" ns="publish_speed_turn"/>
+    <rosparam command="load" file="$(arg trial_dir)/run_identity.yaml" ns="control_research"/>
+    <node pkg="move_car" type="p5_nmpc_worker_node" name="p7_nmpc_worker" output="screen">
+      <rosparam command="load" file="$(arg trial_dir)/worker.yaml"/>
+    </node>
+  </group>
 </launch>

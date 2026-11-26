@@ -1,0 +1,78 @@
+{
+  "algorithm": "flat_nmpc_slqr",
+  "binary_sha": {
+    "control_pub": "728ba5c29046028a97ced924da97d9360d0208263c9481d029ca8edbc6131d50",
+    "p5_nmpc_worker_node": "c00abf524cf65d70e9d95faea9611fc8ece25f84c68b7b4b9a319e3b2bd2031a"
+  },
+  "bounded_slqr_feedback": true,
+  "calibration_claim": false,
+  "candidate_count": 288,
+  "command_publishers": [
+    "/p7_smoke_controller"
+  ],
+  "commands": 376,
+  "commands_after_worker_exit": 82,
+  "data_origin": "synthetic_tool_test",
+  "decision_dimensions": [
+    8
+  ],
+  "flat_accuracy_refinement": false,
+  "flat_feasibility_recovery": false,
+  "fresh_local_feedback_candidates": 58,
+  "intervals_over_33_333_ms": 0,
+  "leased_nonzero_commands": 136,
+  "maximum_speed": 0.4,
+  "nmpc_selected": 93,
+  "nonzero_local_feedback_candidates": 58,
+  "normal_nmpc_above_previous_point_three_two": 65,
+  "pass_test": true,
+  "passive_command_subscribers": [],
+  "physical_execution_claims": 0,
+  "private_master": true,
+  "private_master_uri": "http://127.0.0.1:50273",
+  "production_modified": false,
+  "publish_intervals_ms": {
+    "max": 30.036995,
+    "p50": 25.001096,
+    "p95": 25.548225,
+    "p99": 26.264051
+  },
+  "published_records": 375,
+  "real_hardware": false,
+  "real_labelled_requests": 375,
+  "real_vehicle_test": false,
+  "reference_hz": 30,
+  "reference_quality": "healthy",
+  "reference_revalidation": true,
+  "request_count": 375,
+  "run_id": "p7real_software_smoke_1795683239929537310",
+  "shadow_only": false,
+  "single_commit": true,
+  "smooth_steering_handoff": true,
+  "solver_attempts": 146,
+  "source_sha": "ded1da5e5bacecdbebe6d6163b384f02dc95591de89aee5d3f28e199415e8595",
+  "steering_rate_continuity_weight": 0.05,
+  "straight_conditioned_valid_candidates": 99,
+  "straight_damped_valid_candidates": 99,
+  "straight_tracking_reference": true,
+  "straight_yaw_damping_weight": 2.0,
+  "strategy_matches_frozen_flags": true,
+  "test_mapping_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "unabridged_result_sha256": "29f15b0d727b84c3ad2086435b1f0384399041d2f1a7b3acb16abded33fae7fb",
+  "valid_candidates": 99,
+  "wrong_frame_nmpc_accepted": 0,
+  "zero_speed_windows": {
+    "expired_lease": {
+      "maximum_speed": 0.0,
+      "n": 24
+    },
+    "initial_no_lease": {
+      "maximum_speed": 0.0,
+      "n": 42
+    },
+    "worker_exited_lease_expired": {
+      "maximum_speed": 0.0,
+      "n": 24
+    }
+  }
+}

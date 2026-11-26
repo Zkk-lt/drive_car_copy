@@ -1,0 +1,314 @@
+{
+  "2039@80": {
+    "paired": [
+      {
+        "requests": 96,
+        "feasible_both": 96,
+        "accepted_status_changes": 0,
+        "max_speed_delta_mps": 1.9304267193098745e-06,
+        "max_steer_delta_rad": 0.004375002885752842,
+        "max_common_cost_delta": 0.0018853897959648092
+      }
+    ],
+    "cpu_time_s": {
+      "before": [
+        0.582597
+      ],
+      "after": [
+        0.52907
+      ]
+    },
+    "sides": {
+      "before": {
+        "feasible": 96,
+        "timeout": 0,
+        "solve_ms": {
+          "p50": 4.1221,
+          "p95": 12.1109,
+          "p99": 15.5931,
+          "max": 15.5931
+        }
+      },
+      "after": {
+        "feasible": 96,
+        "timeout": 0,
+        "solve_ms": {
+          "p50": 3.3857,
+          "p95": 8.0435,
+          "p99": 19.7158,
+          "max": 19.7158
+        }
+      }
+    }
+  },
+  "2039@8": {
+    "paired": [
+      {
+        "requests": 96,
+        "feasible_both": 85,
+        "accepted_status_changes": 10,
+        "max_speed_delta_mps": 0.0006249691383622968,
+        "max_steer_delta_rad": 0.03675000000000339,
+        "max_common_cost_delta": 0.19355767641980548
+      },
+      {
+        "requests": 96,
+        "feasible_both": 84,
+        "accepted_status_changes": 12,
+        "max_speed_delta_mps": 0.0002650000000008479,
+        "max_steer_delta_rad": 0.01325000000000022,
+        "max_common_cost_delta": 0.1481560439555054
+      },
+      {
+        "requests": 96,
+        "feasible_both": 92,
+        "accepted_status_changes": 3,
+        "max_speed_delta_mps": 0.00026250000000010987,
+        "max_steer_delta_rad": 0.01324999999999539,
+        "max_common_cost_delta": 0.18583394365057443
+      }
+    ],
+    "cpu_time_s": {
+      "before": [
+        0.657439,
+        0.563598,
+        0.532436
+      ],
+      "after": [
+        0.476278,
+        0.504782,
+        0.447668
+      ]
+    },
+    "sides": {
+      "before": {
+        "feasible": 273,
+        "timeout": 14,
+        "solve_ms": {
+          "p50": 4.3967,
+          "p95": 6.7158,
+          "p99": 9.4067,
+          "max": 10.4004
+        }
+      },
+      "after": {
+        "feasible": 274,
+        "timeout": 14,
+        "solve_ms": {
+          "p50": 3.2323,
+          "p95": 6.1147,
+          "p99": 8.5244,
+          "max": 10.2452
+        }
+      }
+    }
+  },
+  "2149@80": {
+    "paired": [
+      {
+        "requests": 47,
+        "feasible_both": 35,
+        "accepted_status_changes": 0,
+        "max_speed_delta_mps": 3.760520672635437e-09,
+        "max_steer_delta_rad": 5.996757229675964e-09,
+        "max_common_cost_delta": 1.7641855230010606e-06
+      }
+    ],
+    "cpu_time_s": {
+      "before": [
+        0.238783
+      ],
+      "after": [
+        0.236424
+      ]
+    },
+    "sides": {
+      "before": {
+        "feasible": 35,
+        "timeout": 0,
+        "solve_ms": {
+          "p50": 4.1138,
+          "p95": 9.3381,
+          "p99": 13.7314,
+          "max": 13.7314
+        }
+      },
+      "after": {
+        "feasible": 35,
+        "timeout": 0,
+        "solve_ms": {
+          "p50": 3.6133,
+          "p95": 11.7109,
+          "p99": 14.3863,
+          "max": 14.3863
+        }
+      }
+    }
+  },
+  "2149@8": {
+    "paired": [
+      {
+        "requests": 47,
+        "feasible_both": 32,
+        "accepted_status_changes": 3,
+        "max_speed_delta_mps": 0.00026250000000010987,
+        "max_steer_delta_rad": 0.02284540581832946,
+        "max_common_cost_delta": 0.10176075104393933
+      },
+      {
+        "requests": 47,
+        "feasible_both": 33,
+        "accepted_status_changes": 2,
+        "max_speed_delta_mps": 0.00026500000000012625,
+        "max_steer_delta_rad": 0.013250000000001316,
+        "max_common_cost_delta": 0.39033078430658985
+      },
+      {
+        "requests": 47,
+        "feasible_both": 32,
+        "accepted_status_changes": 3,
+        "max_speed_delta_mps": 0.00026500000000007073,
+        "max_steer_delta_rad": 0.013250000000000262,
+        "max_common_cost_delta": 0.2038016631726295
+      }
+    ],
+    "cpu_time_s": {
+      "before": [
+        0.265457,
+        0.309604,
+        0.262746
+      ],
+      "after": [
+        0.214911,
+        0.199374,
+        0.202748
+      ]
+    },
+    "sides": {
+      "before": {
+        "feasible": 99,
+        "timeout": 6,
+        "solve_ms": {
+          "p50": 5.3,
+          "p95": 7.7587,
+          "p99": 8.1053,
+          "max": 8.1432
+        }
+      },
+      "after": {
+        "feasible": 103,
+        "timeout": 2,
+        "solve_ms": {
+          "p50": 3.3607,
+          "p95": 5.9348,
+          "p99": 6.9903,
+          "max": 8.8497
+        }
+      }
+    }
+  },
+  "2204@80": {
+    "paired": [
+      {
+        "requests": 95,
+        "feasible_both": 74,
+        "accepted_status_changes": 0,
+        "max_speed_delta_mps": 1.5917364620809948e-07,
+        "max_steer_delta_rad": 0.002821927933674022,
+        "max_common_cost_delta": 8.367852629725774e-05
+      }
+    ],
+    "cpu_time_s": {
+      "before": [
+        0.480365
+      ],
+      "after": [
+        0.444777
+      ]
+    },
+    "sides": {
+      "before": {
+        "feasible": 74,
+        "timeout": 0,
+        "solve_ms": {
+          "p50": 3.8852,
+          "p95": 12.4773,
+          "p99": 19.6645,
+          "max": 19.6645
+        }
+      },
+      "after": {
+        "feasible": 74,
+        "timeout": 0,
+        "solve_ms": {
+          "p50": 3.0497,
+          "p95": 8.4335,
+          "p99": 15.1138,
+          "max": 15.1138
+        }
+      }
+    }
+  },
+  "2204@8": {
+    "paired": [
+      {
+        "requests": 95,
+        "feasible_both": 68,
+        "accepted_status_changes": 6,
+        "max_speed_delta_mps": 0.00026500006327279113,
+        "max_steer_delta_rad": 0.01325000000000015,
+        "max_common_cost_delta": 0.24472982570289947
+      },
+      {
+        "requests": 95,
+        "feasible_both": 72,
+        "accepted_status_changes": 2,
+        "max_speed_delta_mps": 0.00026302135034589336,
+        "max_steer_delta_rad": 0.013250000000000123,
+        "max_common_cost_delta": 0.32497594264387786
+      },
+      {
+        "requests": 95,
+        "feasible_both": 72,
+        "accepted_status_changes": 2,
+        "max_speed_delta_mps": 0.0002625000000001654,
+        "max_steer_delta_rad": 0.013125000000000359,
+        "max_common_cost_delta": 0.16135299705062056
+      }
+    ],
+    "cpu_time_s": {
+      "before": [
+        0.537453,
+        0.43975,
+        0.454575
+      ],
+      "after": [
+        0.371433,
+        0.381137,
+        0.397743
+      ]
+    },
+    "sides": {
+      "before": {
+        "feasible": 215,
+        "timeout": 7,
+        "solve_ms": {
+          "p50": 4.2495,
+          "p95": 7.0031,
+          "p99": 8.3211,
+          "max": 11.9231
+        }
+      },
+      "after": {
+        "feasible": 219,
+        "timeout": 3,
+        "solve_ms": {
+          "p50": 2.9101,
+          "p95": 5.6573,
+          "p99": 7.9474,
+          "max": 10.2394
+        }
+      }
+    }
+  }
+}

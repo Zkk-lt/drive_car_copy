@@ -1,0 +1,49 @@
+{
+  "binary_sha": {
+    "control_pub": "728ba5c29046028a97ced924da97d9360d0208263c9481d029ca8edbc6131d50",
+    "p5_nmpc_worker_node": "efc9808db7933c6a62eec072dc1b7890d5b3d1db19a7df2e967e9052ad447072"
+  },
+  "config_sha256": {
+    "adaptation.yaml": "f86d062539d40e2f7f4ce44b67a0a4761ccf85fe5b9ddc394bc7ab7639623fe1",
+    "base.yaml": "0f94651b09526e5f1e79501cdce3120a21fec32854d867ae3186adfb5e52961d",
+    "p7_strategy.yaml": "ffe6c1d5e52ca9133de9edabceb6727a950cdf291b7645420ce8110a47f6f518",
+    "reconstructor.yaml": "d778efd6773e326107174f7e092943c48f133c8b05d724e79faf232485f83ba4",
+    "s8_test_baseline.yaml": "a117706e3c712d38d4b108c0114e4f91eb74b40c289b94eb8bb638af0581fc77",
+    "safety.yaml": "5dfd273dd2362921879d9988ddbd556f0396804f501d77e54f112fd0c2b0d9bb",
+    "terrain/asphalt.yaml": "6922205947c705960188aad95cca88027a2cfed0afcb829e140c61795f73e14f",
+    "terrain/grass_bumpy.yaml": "bf167f261e67c75dd3939ceb45e9bdbf2a2ba62794597ad6fbc97738669f73d7",
+    "terrain/smooth.yaml": "39a0ae2a51d8e2239437994c3108fdc6fa8cccac9c14661a2c56ddbb723a23e6",
+    "terrain/unknown.yaml": "32622728010d39453d61766b727ff6b329110a65b8f411ec3695221a73ed5474"
+  },
+  "maximum_requested_speed_mps": 0.4,
+  "physical_tracking_validated": false,
+  "qualified_scope": "operator supervised smooth development trial",
+  "reconstructor_sha256": "ce727c41a5f0ca323fec903d3bfa0cf3e655496307e4a7471baf9f9c213809c6",
+  "results": {
+    "REAL_SWAY_WINDOWS.md": {
+      "path": "/home/ubuntu/drive_car_copy/research_runs/p7_smooth_gap_flat8_20261125/straight_sway_review/REAL_SWAY_WINDOWS.md",
+      "sha256": "67acd14542adce5756465cf456b1cd648c7a0f598ed2bb7b15f7ffcbe76eeeb4"
+    },
+    "private_ros.json": {
+      "path": "/home/ubuntu/drive_car_copy/research_runs/p7_smooth_gap_flat8_20261125/straight_sway_review/private_ros.json",
+      "sha256": "c1120ab507c8c8577f770e4822d2493e9b297317c414fe51830d421413248c75"
+    },
+    "real_course_replay_summary.json": {
+      "path": "/home/ubuntu/drive_car_copy/research_runs/p7_smooth_gap_flat8_20261125/straight_sway_review/real_course_replay_summary.json",
+      "sha256": "4fe0c99d3d83e19788d6d4f8fc202a4569d20cd0b7e0ba7b5c4814a2c9a4ffdd"
+    },
+    "synthetic_connector_summary.json": {
+      "path": "/home/ubuntu/drive_car_copy/research_runs/p7_smooth_gap_flat8_20261125/straight_sway_review/synthetic_connector_summary.json",
+      "sha256": "7299f41b8a540c6d686b99cd1baa409e352b949292696c54b2a77a51e8ec05f8"
+    }
+  },
+  "source_runs": [
+    "p7real_20261126T175421_ba218cba"
+  ],
+  "strategy_sha256": "ffe6c1d5e52ca9133de9edabceb6727a950cdf291b7645420ce8110a47f6f518",
+  "supervised_software_qualified": true,
+  "supported_course": true,
+  "turn_release_weight": 0.0,
+  "turn_speed_reserve_mps": 0.025,
+  "validated_deployment": false
+}

@@ -1,0 +1,284 @@
+{
+  "analyzer_source_sha256": "b7996c480403968563531bdd57a6c119909376fc9a3a3ec24475e6394e133db8",
+  "bend_geometry": {
+    "coverage": "Strict agreement group, not every real turn. Entries and exits can have a small immediate feedforward curvature while a bend is visible farther along the path.",
+    "frames": "right/left sign is corroborated by feedforward curvature, measured steer and raw IMU; positive is outward in each turn",
+    "independent_position_truth": false,
+    "left": {
+      "all_directional_samples": {
+        "approx_front_outward_minus_steady_offset": {
+          "abs_p95_m": null,
+          "max_signed_m": null,
+          "median_m": null,
+          "samples": 0,
+          "signed_p95_m": null
+        },
+        "front_axle_vs_execution_center_outward": {
+          "abs_p95_m": 0.0481264,
+          "max_signed_m": 0.049253,
+          "median_m": 0.037987,
+          "samples": 3,
+          "signed_p95_m": 0.0481264
+        },
+        "historical_tangent_jumps_gt_0p25_rad": 0,
+        "largest_body_center_inward_example": {
+          "front_axle_vs_execution_center_outward_m": 0.049253,
+          "measured_steering_rad": 0.189150153,
+          "observed_history_body_center_outward_m": -0.012429906,
+          "owner": "nmpc",
+          "preview_kappa_inv_m": 0.505448,
+          "raw_imu_yaw_rate_rad_s": 0.142656,
+          "time_utc8": "2026-11-26T17:02:43.297+08:00"
+        },
+        "largest_body_center_outward_example": {
+          "front_axle_vs_execution_center_outward_m": 0.024669,
+          "measured_steering_rad": 0.105611967,
+          "observed_history_body_center_outward_m": 0.010321111,
+          "owner": "nmpc",
+          "preview_kappa_inv_m": 0.219893,
+          "raw_imu_yaw_rate_rad_s": 0.075722,
+          "time_utc8": "2026-11-26T17:02:42.247+08:00"
+        },
+        "largest_front_outward_example": {
+          "front_axle_vs_execution_center_outward_m": 0.049253,
+          "measured_steering_rad": 0.189150153,
+          "observed_history_body_center_outward_m": -0.012429906,
+          "owner": "nmpc",
+          "preview_kappa_inv_m": 0.505448,
+          "raw_imu_yaw_rate_rad_s": 0.142656,
+          "time_utc8": "2026-11-26T17:02:43.297+08:00"
+        },
+        "nominal_steady_front_axle_outward": {
+          "abs_p95_m": null,
+          "max_signed_m": null,
+          "median_m": null,
+          "samples": 0,
+          "signed_p95_m": null
+        },
+        "observed_history_body_center_outward": {
+          "abs_p95_m": 0.012219026499999999,
+          "max_signed_m": 0.010321111,
+          "median_m": 0.00218658,
+          "samples": 3,
+          "signed_p95_m": 0.009507657899999997
+        },
+        "observed_history_center_inward_ge_4cm": 0,
+        "observed_history_center_outward_ge_4cm": 0,
+        "publication_owners": {
+          "legacy_slqr": 1,
+          "nmpc": 2
+        },
+        "sampled_cycles": 3
+      },
+      "sustained_samples": {
+        "approx_front_outward_minus_steady_offset": {
+          "abs_p95_m": null,
+          "max_signed_m": null,
+          "median_m": null,
+          "samples": 0,
+          "signed_p95_m": null
+        },
+        "front_axle_vs_execution_center_outward": {
+          "abs_p95_m": null,
+          "max_signed_m": null,
+          "median_m": null,
+          "samples": 0,
+          "signed_p95_m": null
+        },
+        "historical_tangent_jumps_gt_0p25_rad": 0,
+        "largest_body_center_inward_example": null,
+        "largest_body_center_outward_example": null,
+        "largest_front_outward_example": null,
+        "nominal_steady_front_axle_outward": {
+          "abs_p95_m": null,
+          "max_signed_m": null,
+          "median_m": null,
+          "samples": 0,
+          "signed_p95_m": null
+        },
+        "observed_history_body_center_outward": {
+          "abs_p95_m": null,
+          "max_signed_m": null,
+          "median_m": null,
+          "samples": 0,
+          "signed_p95_m": null
+        },
+        "observed_history_center_inward_ge_4cm": 0,
+        "observed_history_center_outward_ge_4cm": 0,
+        "publication_owners": {},
+        "sampled_cycles": 0
+      }
+    },
+    "limitations": "The original front-axle error is relative to the ego-anchored execution CENTER path. Observed-history error uses the body center and measured-history support. The steady-circle axle radius offset is a geometry diagnostic, not an actual tire-to-tire error or an instruction to lower right-turn gain.",
+    "limits": {
+      "max_gap_between_runtime_samples_s": 0.16,
+      "preview_curvature_abs_min_inv_m": 0.12,
+      "raw_imu_yaw_abs_min_rad_s": 0.045,
+      "speed_proxy_min_m_s": 0.15,
+      "steering_abs_min_rad": 0.08,
+      "sustained_window_min_s": 0.15
+    },
+    "matching": "runtime cycle and committed command within 1 ms; origin reconstruction and pose timestamps must be at or before both matched cycle stamps. This CSV join does not establish when an origin row arrived at the controller.",
+    "right": {
+      "all_directional_samples": {
+        "approx_front_outward_minus_steady_offset": {
+          "abs_p95_m": 0.014284494383198686,
+          "max_signed_m": 0.014738117027263485,
+          "median_m": 0.010201890586615497,
+          "samples": 2,
+          "signed_p95_m": 0.014284494383198686
+        },
+        "front_axle_vs_execution_center_outward": {
+          "abs_p95_m": 0.0651725,
+          "max_signed_m": 0.071213,
+          "median_m": 0.055710499999999996,
+          "samples": 22,
+          "signed_p95_m": 0.0651725
+        },
+        "historical_tangent_jumps_gt_0p25_rad": 2,
+        "largest_body_center_inward_example": {
+          "front_axle_vs_execution_center_outward_m": 0.055955,
+          "measured_steering_rad": -0.217943195,
+          "observed_history_body_center_outward_m": -0.103573323,
+          "owner": "legacy_slqr",
+          "preview_kappa_inv_m": -0.493882,
+          "raw_imu_yaw_rate_rad_s": -0.138574,
+          "time_utc8": "2026-11-26T17:01:19.972+08:00"
+        },
+        "largest_body_center_outward_example": {
+          "front_axle_vs_execution_center_outward_m": 0.050059,
+          "measured_steering_rad": -0.234244366,
+          "observed_history_body_center_outward_m": 0.025687889,
+          "owner": "nmpc",
+          "preview_kappa_inv_m": -0.325742,
+          "raw_imu_yaw_rate_rad_s": -0.108214,
+          "time_utc8": "2026-11-26T17:01:34.072+08:00"
+        },
+        "largest_front_outward_example": {
+          "front_axle_vs_execution_center_outward_m": 0.071213,
+          "measured_steering_rad": -0.312573694,
+          "observed_history_body_center_outward_m": 0.00460112,
+          "owner": "legacy_slqr",
+          "preview_kappa_inv_m": -0.18773,
+          "raw_imu_yaw_rate_rad_s": -0.095963,
+          "time_utc8": "2026-11-26T17:01:29.422+08:00"
+        },
+        "nominal_steady_front_axle_outward": {
+          "abs_p95_m": 0.04954091320996769,
+          "max_signed_m": 0.05028933585403249,
+          "median_m": 0.0428051094133845,
+          "samples": 2,
+          "signed_p95_m": 0.04954091320996769
+        },
+        "observed_history_body_center_outward": {
+          "abs_p95_m": 0.1020560531,
+          "max_signed_m": 0.025687889,
+          "median_m": -0.0098541785,
+          "samples": 22,
+          "signed_p95_m": 0.014234962899999998
+        },
+        "observed_history_center_inward_ge_4cm": 5,
+        "observed_history_center_outward_ge_4cm": 0,
+        "publication_owners": {
+          "legacy_slqr": 13,
+          "nmpc": 9
+        },
+        "sampled_cycles": 22
+      },
+      "sustained_samples": {
+        "approx_front_outward_minus_steady_offset": {
+          "abs_p95_m": null,
+          "max_signed_m": null,
+          "median_m": null,
+          "samples": 0,
+          "signed_p95_m": null
+        },
+        "front_axle_vs_execution_center_outward": {
+          "abs_p95_m": 0.06380195,
+          "max_signed_m": 0.065273,
+          "median_m": 0.05273,
+          "samples": 4,
+          "signed_p95_m": 0.06380195
+        },
+        "historical_tangent_jumps_gt_0p25_rad": 0,
+        "largest_body_center_inward_example": {
+          "front_axle_vs_execution_center_outward_m": 0.055466,
+          "measured_steering_rad": -0.226420149,
+          "observed_history_body_center_outward_m": -0.102287561,
+          "owner": "legacy_slqr",
+          "preview_kappa_inv_m": -0.456625,
+          "raw_imu_yaw_rate_rad_s": -0.146564,
+          "time_utc8": "2026-11-26T17:01:20.047+08:00"
+        },
+        "largest_body_center_outward_example": {
+          "front_axle_vs_execution_center_outward_m": 0.065273,
+          "measured_steering_rad": -0.273857796,
+          "observed_history_body_center_outward_m": 0.012362211,
+          "owner": "legacy_slqr",
+          "preview_kappa_inv_m": -0.449485,
+          "raw_imu_yaw_rate_rad_s": -0.156151,
+          "time_utc8": "2026-11-26T17:02:02.647+08:00"
+        },
+        "largest_front_outward_example": {
+          "front_axle_vs_execution_center_outward_m": 0.065273,
+          "measured_steering_rad": -0.273857796,
+          "observed_history_body_center_outward_m": 0.012362211,
+          "owner": "legacy_slqr",
+          "preview_kappa_inv_m": -0.449485,
+          "raw_imu_yaw_rate_rad_s": -0.156151,
+          "time_utc8": "2026-11-26T17:02:02.647+08:00"
+        },
+        "nominal_steady_front_axle_outward": {
+          "abs_p95_m": null,
+          "max_signed_m": null,
+          "median_m": null,
+          "samples": 0,
+          "signed_p95_m": null
+        },
+        "observed_history_body_center_outward": {
+          "abs_p95_m": 0.09098709934999996,
+          "max_signed_m": 0.012362211,
+          "median_m": -0.0237133585,
+          "samples": 4,
+          "signed_p95_m": 0.0074365442999999865
+        },
+        "observed_history_center_inward_ge_4cm": 1,
+        "observed_history_center_outward_ge_4cm": 0,
+        "publication_owners": {
+          "legacy_slqr": 4
+        },
+        "sampled_cycles": 4
+      }
+    },
+    "status": "ok"
+  },
+  "bend_metrics_source_sha256": "4b4f06d36772721664d04ff1c250c8fc9bb45dbacfc634269054c8b8522f97ff",
+  "collection_complete": true,
+  "published_history": {
+    "committed_unique": 6811,
+    "duplicates": [],
+    "failed_publications": [],
+    "first": [
+      1,
+      161
+    ],
+    "foreign_run_events": 0,
+    "last": [
+      1,
+      6971
+    ],
+    "observed_sequence_discontinuities": [],
+    "physical_execution_claims": 0,
+    "prefix_suffix_completeness": "unknown",
+    "samples": 6811,
+    "strict_observed_history_contiguous": true
+  },
+  "run_id": "p7real_20261126T165921_e62f8981",
+  "selected_straight_conditioning": {
+    "line_fit_positive": 359,
+    "matched_with_conditioning_fields": 2443,
+    "moving_nmpc_publications": 2443,
+    "yaw_damping_active_gt_0p01": 229
+  },
+  "source_events_sha256": "07a73f67c18431495d5fced55090b5c03b0e71c1f80c709296c684e52c0dcd25"
+}

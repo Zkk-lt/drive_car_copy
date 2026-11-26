@@ -1,0 +1,38 @@
+<launch>
+  <!-- Run ONLY on a private ROS master without hardware drivers. The executable
+       additionally rejects real command sinks and unsafe resolved remappings. -->
+  <arg name="run_id"/>
+  <arg name="runtime_yaml"/>
+  <arg name="config_hash"/>
+  <arg name="algorithm_mode" default="legacy_slqr"/>
+  <arg name="synthetic_observation_contract" default="false"/>
+  <arg name="allow_test_adaptation" default="false"/>
+  <param name="/control_research/run_id" value="$(arg run_id)"/>
+  <node pkg="move_car" type="control_pub" name="p6_unified_controller" output="screen">
+    <rosparam command="load" file="$(find move_car)/config/control/p6/s8_test_baseline.yaml"/>
+    <rosparam command="load" file="$(arg runtime_yaml)"/>
+    <param name="cmd_topic" value="/control_research/p5_test/command"/>
+    <param name="p6_enabled" value="true"/>
+    <param name="p6_algorithm_mode" value="$(arg algorithm_mode)"/>
+    <param name="p6_synthetic_observation_contract" value="$(arg synthetic_observation_contract)"/>
+    <param name="p5_mode" value="legacy_slqr"/>
+    <param name="p5_isolated_test" value="true"/>
+    <param name="p5_allow_test_nmpc" value="true"/>
+    <param name="p5_enable_adaptation" value="$(arg allow_test_adaptation)"/>
+    <param name="p5_nominal_state_contract" value="$(arg synthetic_observation_contract)"/>
+    <param name="p5_imu_frame" value="base_link"/>
+    <param name="p5_terrain" value="smooth"/>
+    <param name="p5_config_hash" value="$(arg config_hash)"/>
+    <param name="p5_diagnostics_enabled" value="true"/>
+    <param name="enable_debug_csv_logs" value="false"/>
+    <param name="enable_adaptive_shadow" value="false"/>
+    <param name="enable_research_telemetry" value="false"/>
+  </node>
+  <node pkg="move_car" type="p5_nmpc_worker_node" name="p6_nmpc_worker" output="screen">
+    <rosparam command="load" file="$(arg runtime_yaml)"/>
+    <param name="p6_enabled" value="true"/>
+    <param name="run_id" value="$(arg run_id)"/>
+    <param name="enable_p6_adaptation" value="$(arg allow_test_adaptation)"/>
+    <param name="enable_adaptation" value="false"/>
+  </node>
+</launch>

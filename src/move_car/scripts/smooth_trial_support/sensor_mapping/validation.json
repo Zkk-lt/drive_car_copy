@@ -1,0 +1,19 @@
+{
+  "checks": {
+    "all_source_sha_match": true,
+    "counts_expected": true,
+    "duplicate_manifest_rejected": true,
+    "evidence_report_sha": true,
+    "existing_output_refused_unchanged": true,
+    "five_real_runs_only": true,
+    "historical_max_below_requested": true,
+    "physical_flags_remain_false": true,
+    "profile_fixed_fields": true,
+    "synthetic_manifest_rejected": true
+  },
+  "failed": 0,
+  "passed": 10,
+  "scope": "software evidence audit validation; no ROS or vehicle execution",
+  "script_sha256": "706ac0f85b9935397a099751b48429dd8c52a90f004a09127b62ffd9683032b0",
+  "source_files": 17
+}

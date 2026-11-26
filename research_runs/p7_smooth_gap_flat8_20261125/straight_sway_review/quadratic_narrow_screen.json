@@ -1,0 +1,475 @@
+{
+  "origin": "frozen archived real command context; two cold starts; no trajectory feedback",
+  "run_id": "p7real_20261126T175421_ba218cba",
+  "raw_event_sha256": "31310dded30840ce1eb284547a9a65caf9cb5b1b29245b1896ca34e79f98276d",
+  "fixture_sha256": "98bd8fe432c92f2651e636bcd8054c951d9d074fcbb7365ffad706e6532fdd24",
+  "windows": [
+    [
+      "steady_straight",
+      "17:56:03.225",
+      "17:56:04.325"
+    ],
+    [
+      "first_sway",
+      "17:56:10.799",
+      "17:56:14.376"
+    ],
+    [
+      "late_sway",
+      "17:57:38.150",
+      "17:57:39.650"
+    ],
+    [
+      "winding",
+      "17:56:18.400",
+      "17:56:21.800"
+    ],
+    [
+      "broad_right_entry",
+      "17:57:27.500",
+      "17:57:29.100"
+    ],
+    [
+      "right_active_turn",
+      "17:57:05.800",
+      "17:57:07.000"
+    ]
+  ],
+  "groups": {
+    "broad_right_entry": {
+      "rows": 21,
+      "old_ok": 15,
+      "new_ok": 15,
+      "old_timeouts": 0,
+      "new_timeouts": 0,
+      "course_selected": 0,
+      "changed_with_both_feasible": 0,
+      "old_weight_active": 3,
+      "new_weight_active": 3,
+      "curvature_abs_p95": null,
+      "old_solve_ms": {
+        "p50": 3.603993,
+        "p95": 5.157448,
+        "p99": 5.2024544,
+        "max": 5.213706
+      },
+      "new_solve_ms": {
+        "p50": 3.377135,
+        "p95": 4.945299,
+        "p99": 4.9678334,
+        "max": 4.973467
+      },
+      "old_validated": 15,
+      "new_validated": 15,
+      "steering_change_rad": {
+        "paired_changed": 0,
+        "mean": null,
+        "median": null,
+        "min": null,
+        "max": null
+      },
+      "steering_abs_change_rad": {
+        "paired_changed": 0,
+        "mean": null,
+        "median": null,
+        "min": null,
+        "max": null
+      },
+      "predicted_abs_yaw_rate_change_rad_s": {
+        "paired_changed": 0,
+        "mean": null,
+        "median": null,
+        "min": null,
+        "max": null
+      }
+    },
+    "first_sway": {
+      "rows": 48,
+      "old_ok": 47,
+      "new_ok": 46,
+      "old_timeouts": 0,
+      "new_timeouts": 1,
+      "course_selected": 19,
+      "changed_with_both_feasible": 18,
+      "old_weight_active": 6,
+      "new_weight_active": 12,
+      "curvature_abs_p95": 0.19369655624598192,
+      "old_solve_ms": {
+        "p50": 4.4599195,
+        "p95": 5.1370341,
+        "p99": 5.3102811800000005,
+        "max": 5.444892
+      },
+      "new_solve_ms": {
+        "p50": 4.4220825,
+        "p95": 5.1435819,
+        "p99": 7.057783120000004,
+        "max": 8.627209
+      },
+      "old_validated": 47,
+      "new_validated": 46,
+      "steering_change_rad": {
+        "paired_changed": 14,
+        "mean": 0.003153249056401183,
+        "median": 0.0029732588236359506,
+        "min": -0.009028642665217385,
+        "max": 0.016490474591176002
+      },
+      "steering_abs_change_rad": {
+        "paired_changed": 14,
+        "mean": 0.003153249056401195,
+        "median": 0.0029732588236359506,
+        "min": -0.009028642665217385,
+        "max": 0.016490474591176002
+      },
+      "predicted_abs_yaw_rate_change_rad_s": {
+        "paired_changed": 17,
+        "mean": 0.0011419743547637345,
+        "median": 0.0002612275013834523,
+        "min": -0.0030138389291521975,
+        "max": 0.005649252924660002
+      }
+    },
+    "late_sway": {
+      "rows": 20,
+      "old_ok": 18,
+      "new_ok": 18,
+      "old_timeouts": 0,
+      "new_timeouts": 0,
+      "course_selected": 8,
+      "changed_with_both_feasible": 6,
+      "old_weight_active": 5,
+      "new_weight_active": 5,
+      "curvature_abs_p95": 0.14514131227643592,
+      "old_solve_ms": {
+        "p50": 3.0040139999999997,
+        "p95": 3.7342653,
+        "p99": 3.73965066,
+        "max": 3.740997
+      },
+      "new_solve_ms": {
+        "p50": 2.7992524999999997,
+        "p95": 3.5623291,
+        "p99": 3.7420554199999994,
+        "max": 3.786987
+      },
+      "old_validated": 18,
+      "new_validated": 18,
+      "steering_change_rad": {
+        "paired_changed": 6,
+        "mean": 0.002252698316142618,
+        "median": 0.002399307731727099,
+        "min": -0.0005813151627192953,
+        "max": 0.004448990787388297
+      },
+      "steering_abs_change_rad": {
+        "paired_changed": 6,
+        "mean": 0.002252698316142618,
+        "median": 0.002399307731727099,
+        "min": -0.0005813151627192953,
+        "max": 0.004448990787388297
+      },
+      "predicted_abs_yaw_rate_change_rad_s": {
+        "paired_changed": 6,
+        "mean": 0.0011891325884389834,
+        "median": 0.0010329991815015505,
+        "min": -0.0009272744049639015,
+        "max": 0.0036585578339602
+      }
+    },
+    "right_active_turn": {
+      "rows": 14,
+      "old_ok": 11,
+      "new_ok": 12,
+      "old_timeouts": 1,
+      "new_timeouts": 0,
+      "course_selected": 2,
+      "changed_with_both_feasible": 2,
+      "old_weight_active": 0,
+      "new_weight_active": 0,
+      "curvature_abs_p95": 0.16789710060590768,
+      "old_solve_ms": {
+        "p50": 3.2750665000000003,
+        "p95": 6.456205899999997,
+        "p99": 9.798221979999994,
+        "max": 10.633726
+      },
+      "new_solve_ms": {
+        "p50": 3.1993955,
+        "p95": 4.257028,
+        "p99": 4.3354232,
+        "max": 4.355022
+      },
+      "old_validated": 11,
+      "new_validated": 12,
+      "steering_change_rad": {
+        "paired_changed": 2,
+        "mean": -0.006100723051519791,
+        "median": -0.006100723051519791,
+        "min": -0.007157684240901185,
+        "max": -0.005043761862138396
+      },
+      "steering_abs_change_rad": {
+        "paired_changed": 2,
+        "mean": 0.006100723051519791,
+        "median": 0.006100723051519791,
+        "min": 0.005043761862138396,
+        "max": 0.007157684240901185
+      },
+      "predicted_abs_yaw_rate_change_rad_s": {
+        "paired_changed": 2,
+        "mean": -0.005148825600725895,
+        "median": -0.005148825600725895,
+        "min": -0.01187460456818068,
+        "max": 0.0015769533667288893
+      }
+    },
+    "steady_straight": {
+      "rows": 13,
+      "old_ok": 7,
+      "new_ok": 7,
+      "old_timeouts": 0,
+      "new_timeouts": 0,
+      "course_selected": 0,
+      "changed_with_both_feasible": 0,
+      "old_weight_active": 13,
+      "new_weight_active": 13,
+      "curvature_abs_p95": null,
+      "old_solve_ms": {
+        "p50": 4.012744,
+        "p95": 4.4771088,
+        "p99": 4.54716096,
+        "max": 4.564674
+      },
+      "new_solve_ms": {
+        "p50": 4.082969,
+        "p95": 4.9565178,
+        "p99": 4.9671531600000005,
+        "max": 4.969812
+      },
+      "old_validated": 7,
+      "new_validated": 7,
+      "steering_change_rad": {
+        "paired_changed": 0,
+        "mean": null,
+        "median": null,
+        "min": null,
+        "max": null
+      },
+      "steering_abs_change_rad": {
+        "paired_changed": 0,
+        "mean": null,
+        "median": null,
+        "min": null,
+        "max": null
+      },
+      "predicted_abs_yaw_rate_change_rad_s": {
+        "paired_changed": 0,
+        "mean": null,
+        "median": null,
+        "min": null,
+        "max": null
+      }
+    },
+    "winding": {
+      "rows": 41,
+      "old_ok": 23,
+      "new_ok": 23,
+      "old_timeouts": 0,
+      "new_timeouts": 0,
+      "course_selected": 0,
+      "changed_with_both_feasible": 0,
+      "old_weight_active": 0,
+      "new_weight_active": 0,
+      "curvature_abs_p95": null,
+      "old_solve_ms": {
+        "p50": 1.400559,
+        "p95": 4.814443,
+        "p99": 4.9902488,
+        "max": 5.08371
+      },
+      "new_solve_ms": {
+        "p50": 1.594087,
+        "p95": 4.410419,
+        "p99": 4.7527264,
+        "max": 4.834296
+      },
+      "old_validated": 23,
+      "new_validated": 23,
+      "steering_change_rad": {
+        "paired_changed": 0,
+        "mean": null,
+        "median": null,
+        "min": null,
+        "max": null
+      },
+      "steering_abs_change_rad": {
+        "paired_changed": 0,
+        "mean": null,
+        "median": null,
+        "min": null,
+        "max": null
+      },
+      "predicted_abs_yaw_rate_change_rad_s": {
+        "paired_changed": 0,
+        "mean": null,
+        "median": null,
+        "min": null,
+        "max": null
+      }
+    }
+  },
+  "events": [
+    {
+      "time": "17:56:10.799",
+      "window": "first_sway",
+      "old_blend": 0.137650519342645,
+      "new_blend": 0.3914746734483768,
+      "course_curvature": 0.0896677196417771,
+      "course_selected": 1,
+      "old_weight": 0.0,
+      "new_weight": 0.0,
+      "old_steering": 0.1199014192176602,
+      "new_steering": 0.1155285357843094,
+      "old_yaw_rate_at_0p6": 0.0143610102924925,
+      "new_yaw_rate_at_0p6": 0.0142057766123217
+    },
+    {
+      "time": "17:56:11.024",
+      "window": "first_sway",
+      "old_blend": 0.5368039256219107,
+      "new_blend": 0.5368039256219107,
+      "course_curvature": null,
+      "course_selected": 0,
+      "old_weight": 0.0,
+      "new_weight": 0.0,
+      "old_steering": 0.1340611542134505,
+      "new_steering": 0.1296861542134504,
+      "old_yaw_rate_at_0p6": 0.0233724890136913,
+      "new_yaw_rate_at_0p6": 0.0221119107132917
+    },
+    {
+      "time": "17:56:11.249",
+      "window": "first_sway",
+      "old_blend": 0.0,
+      "new_blend": 0.0,
+      "course_curvature": 0.0,
+      "course_selected": 0,
+      "old_weight": 0.0,
+      "new_weight": 0.0,
+      "old_steering": 0.1346515046237058,
+      "new_steering": 0.1346515046237058,
+      "old_yaw_rate_at_0p6": 0.0489399689950947,
+      "new_yaw_rate_at_0p6": 0.0490781734823967
+    },
+    {
+      "time": "17:56:12.149",
+      "window": "first_sway",
+      "old_blend": 0.0,
+      "new_blend": 0.0,
+      "course_curvature": 0.0,
+      "course_selected": 0,
+      "old_weight": 0.0,
+      "new_weight": 0.0,
+      "old_steering": -0.1499574327900136,
+      "new_steering": -0.1499574327900136,
+      "old_yaw_rate_at_0p6": -0.0334728373488709,
+      "new_yaw_rate_at_0p6": -0.0334728373488709
+    },
+    {
+      "time": "17:56:12.599",
+      "window": "first_sway",
+      "old_blend": 0.0,
+      "new_blend": 0.000124853816238,
+      "course_curvature": 0.2092847948871214,
+      "course_selected": 1,
+      "old_weight": 0.0,
+      "new_weight": 0.0,
+      "old_steering": -0.0363100065678781,
+      "new_steering": -0.0363100065678782,
+      "old_yaw_rate_at_0p6": -0.0326063438882193,
+      "new_yaw_rate_at_0p6": -0.0326063442671867
+    },
+    {
+      "time": "17:56:13.049",
+      "window": "first_sway",
+      "old_blend": 0.0,
+      "new_blend": 0.934853256129057,
+      "course_curvature": 0.0935493386525664,
+      "course_selected": 1,
+      "old_weight": 0.0,
+      "new_weight": 0.0,
+      "old_steering": 0.1373479403773351,
+      "new_steering": 0.1373479403773351,
+      "old_yaw_rate_at_0p6": 0.0148322300791971,
+      "new_yaw_rate_at_0p6": 0.0148960024686643
+    },
+    {
+      "time": "17:56:13.274",
+      "window": "first_sway",
+      "old_blend": 0.0,
+      "new_blend": 0.8748053838015867,
+      "course_curvature": 0.0645813787225702,
+      "course_selected": 1,
+      "old_weight": 0.0,
+      "new_weight": 0.0,
+      "old_steering": 0.107938288238374,
+      "new_steering": 0.1190923124439802,
+      "old_yaw_rate_at_0p6": 0.0491262499504231,
+      "new_yaw_rate_at_0p6": 0.0533220051904582
+    },
+    {
+      "time": "17:57:38.849",
+      "window": "late_sway",
+      "old_blend": 0.0,
+      "new_blend": 0.6177070672390788,
+      "course_curvature": -0.140669156889756,
+      "course_selected": 1,
+      "old_weight": 0.0,
+      "new_weight": 0.0,
+      "old_steering": 0.0403191571308375,
+      "new_steering": 0.0403191571308375,
+      "old_yaw_rate_at_0p6": null,
+      "new_yaw_rate_at_0p6": null
+    },
+    {
+      "time": "17:57:39.074",
+      "window": "late_sway",
+      "old_blend": 0.0,
+      "new_blend": 0.6983131277394814,
+      "course_curvature": -0.1353087875656037,
+      "course_selected": 1,
+      "old_weight": 0.0,
+      "new_weight": 0.0,
+      "old_steering": 0.0763855285872059,
+      "new_steering": 0.0788991022491648,
+      "old_yaw_rate_at_0p6": 0.010387673592477,
+      "new_yaw_rate_at_0p6": 0.0119074722459657
+    }
+  ],
+  "counts": {
+    "broad_right_entry/fixture_rows": 21,
+    "broad_right_entry/observed": 64,
+    "broad_right_entry/request_guard": 4,
+    "broad_right_entry/stride_skip": 39,
+    "first_sway/fixture_rows": 48,
+    "first_sway/observed": 144,
+    "first_sway/stride_skip": 96,
+    "late_sway/fixture_rows": 20,
+    "late_sway/observed": 60,
+    "late_sway/stride_skip": 40,
+    "right_active_turn/fixture_rows": 14,
+    "right_active_turn/no_matching_effective_snapshot": 4,
+    "right_active_turn/observed": 48,
+    "right_active_turn/stride_skip": 30,
+    "steady_straight/fixture_rows": 13,
+    "steady_straight/no_matching_effective_snapshot": 3,
+    "steady_straight/observed": 44,
+    "steady_straight/stride_skip": 28,
+    "winding/fixture_rows": 41,
+    "winding/no_matching_effective_snapshot": 12,
+    "winding/observed": 136,
+    "winding/stride_skip": 83
+  },
+  "raw_hard_cap_mesh_terminal_all_preserved": true
+}

@@ -1,0 +1,11 @@
+<launch>
+  <!-- Passive process only: no S8, planner, CAN driver or command publisher. -->
+  <arg name="runtime_file"/>
+  <arg name="run_id"/>
+  <param name="/control_research/run_id" value="$(arg run_id)" type="str"/>
+  <node pkg="move_car" type="research_shadow_node" name="research_external_shadow" output="screen" launch-prefix="nice -n 10">
+    <rosparam command="load" file="$(arg runtime_file)"/>
+    <param name="enable_adaptive_shadow" value="true"/>
+    <param name="pose_reference_body_center_verified" value="false"/>
+  </node>
+</launch>

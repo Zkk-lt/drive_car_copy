@@ -57,6 +57,14 @@ find_package(Eigen3 REQUIRED)
 ## Generate messages in the 'msg' folder
  add_message_files(
    FILES
+  P5ControlRequest.msg P5ControlCandidate.msg P5PublishedCommand.msg P5ControlDiagnostics.msg
+  P6RawMeasurement.msg P6ControlRequest.msg P6ParameterSnapshot.msg P6ControlCandidate.msg
+   ReferenceSample.msg
+   ReferenceInfo.msg
+   ControlResearchTelemetry.msg
+   EstimatedValue.msg
+   AdaptiveControlTelemetry.msg
+   ResearchValidationTelemetry.msg
    car_parameter.msg
    HistoryTrackingPoint.msg
    HistoryTrackingSnapshot.msg
@@ -151,7 +159,7 @@ link_directories(
 ## With catkin_make all packages are built within a single CMake context
 ## The recommended prefix ensures that target names across packages don't collide
 # add_executable(${PROJECT_NAME}_node src/move_car_node.cpp)
-# add_executable(movecar src/movecar.cpp)
+add_executable(movecar src/movecar.cpp)
 add_executable(control_pub src/control_pub.cpp)
 add_executable(trajectory_reconstructor src/trajectory_reconstructor.cpp)
 target_compile_features(control_pub PRIVATE cxx_std_14)
@@ -165,18 +173,14 @@ target_compile_features(trajectory_reconstructor PRIVATE cxx_std_14)
 ## Add cmake target dependencies of the executable
 ## same as for the library above
 # add_dependencies(${PROJECT_NAME}_node ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
-# add_dependencies(movecar ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
+add_dependencies(movecar ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
 add_dependencies(control_pub ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
 add_dependencies(trajectory_reconstructor ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
 ## Specify libraries to link a library or executable target against
 # target_link_libraries(${PROJECT_NAME}_node
 #   ${catkin_LIBRARIES}
 # # )
-#  target_link_libraries(movecar
-#    ${catkin_LIBRARIES}
-#    libcontrolcan.so
-#    Eigen3::Eigen
-#  )
+target_link_libraries(movecar ${catkin_LIBRARIES} "${CMAKE_CURRENT_SOURCE_DIR}/lib/libcontrolcan.so")
 
  target_link_libraries(control_pub
  ${catkin_LIBRARIES}
@@ -241,3 +245,104 @@ add_dependencies(trajectory_reconstructor ${${PROJECT_NAME}_EXPORTED_TARGETS} ${
 
 ## Add folders to be run by python nosetests
 # catkin_add_nosetests(test)
+
+# Research tools preserve their Python2 (ROS Melodic) / Python3 (offline) shebangs.
+install(PROGRAMS scripts/record_control_run.py scripts/analyze_control_run.py
+  scripts/validate_control_config.py scripts/prepare_control_runtime.py scripts/terrain_dataset.py
+  scripts/audit_legacy_control_data.py scripts/calibrate_vehicle_state.py
+  scripts/terrain_experiment.py scripts/audit_raw_control_run.py scripts/identify_vehicle_model.py
+  scripts/monitor_control_timing.py scripts/prepare_smooth_dataset.py
+  scripts/assess_smooth_readiness.py scripts/check_control_collection.py
+  scripts/collect_stationary_raw.py scripts/run_smooth_experiment.py
+  scripts/p7_smooth_trial.py scripts/p7_operator_lease.py
+  scripts/audit_p7_historical_mapping.py scripts/analyze_p7_trial.py
+  DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION})
+install(DIRECTORY scripts/control_research DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
+  PATTERN "__pycache__" EXCLUDE PATTERN "*.pyc" EXCLUDE)
+install(DIRECTORY config/ DESTINATION ${CATKIN_PACKAGE_SHARE_DESTINATION}/config)
+install(DIRECTORY docs/control_research DESTINATION ${CATKIN_PACKAGE_SHARE_DESTINATION}/docs)
+install(FILES launch/control_research_record.launch launch/control_research_shadow.launch
+  DESTINATION ${CATKIN_PACKAGE_SHARE_DESTINATION}/launch)
+
+if(CATKIN_ENABLE_TESTING)
+  foreach(test_name reduced_nmpc vehicle_observer adaptive_runtime flatness_reduction control_snapshot_continuity research_parameterization adaptation_validity direct_rollout_guard causal_raw_snapshot)
+    add_executable(test_${test_name} test/control/test_${test_name}.cpp)
+    target_compile_options(test_${test_name} PRIVATE -std=c++14 -O2 -UNDEBUG -Wall -Wextra -Werror -pedantic)
+    if(test_name STREQUAL "direct_rollout_guard")
+      target_compile_options(test_${test_name} PRIVATE -fno-access-control)
+    endif()
+    add_test(NAME control_${test_name} COMMAND test_${test_name})
+  endforeach()
+endif()
+install(FILES launch/p6_isolated_control_test.launch DESTINATION ${CATKIN_PACKAGE_SHARE_DESTINATION}/launch)
+
+# Independent diagnostic process. Never linked as a command publisher.
+add_executable(research_shadow_node src/research_shadow_node.cpp)
+target_compile_options(research_shadow_node PRIVATE -std=c++14)
+add_dependencies(research_shadow_node ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
+target_link_libraries(research_shadow_node ${catkin_LIBRARIES})
+install(TARGETS research_shadow_node RUNTIME DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION})
+
+install(FILES launch/control_research_external.launch DESTINATION ${CATKIN_PACKAGE_SHARE_DESTINATION}/launch)
+
+add_executable(p5_nmpc_worker_node src/unified_nmpc_worker.cpp)
+target_compile_options(p5_nmpc_worker_node PRIVATE -std=c++14)
+add_dependencies(p5_nmpc_worker_node ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
+target_link_libraries(p5_nmpc_worker_node ${catkin_LIBRARIES})
+install(TARGETS p5_nmpc_worker_node RUNTIME DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION})
+if(CATKIN_ENABLE_TESTING)
+ add_executable(test_p5_unified test/control/test_p5_unified.cpp)
+ target_compile_options(test_p5_unified PRIVATE -std=c++14 -O2 -UNDEBUG -Wall -Wextra -Werror -pedantic)
+ target_link_libraries(test_p5_unified pthread)
+ add_test(NAME p5_unified_contract COMMAND test_p5_unified)
+endif()
+
+install(PROGRAMS scripts/record_p5_events.py DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION})
+install(FILES launch/p5_isolated_control_test.launch DESTINATION ${CATKIN_PACKAGE_SHARE_DESTINATION}/launch)
+
+# Isolated P6 research executable; no driver or real command publisher.
+add_executable(p6_closed_loop test/control/run_p6_closed_loop.cpp)
+target_compile_options(p6_closed_loop PRIVATE -std=c++14 -O2 -fno-access-control)
+add_dependencies(p6_closed_loop ${${PROJECT_NAME}_EXPORTED_TARGETS} ${catkin_EXPORTED_TARGETS})
+target_link_libraries(p6_closed_loop ${catkin_LIBRARIES})
+
+if(CATKIN_ENABLE_TESTING)
+ add_executable(test_p7_supervised test/control/test_p7_supervised.cpp)
+ target_compile_options(test_p7_supervised PRIVATE -std=c++14 -O2 -UNDEBUG -Wall -Wextra)
+ add_test(NAME p7_supervised_contract COMMAND test_p7_supervised)
+ add_executable(test_p7_steering_handoff test/control/test_p7_steering_handoff.cpp)
+ target_compile_options(test_p7_steering_handoff PRIVATE -std=c++14 -O2 -UNDEBUG -Wall -Wextra)
+ add_test(NAME p7_steering_handoff COMMAND test_p7_steering_handoff)
+ add_executable(test_p7_straight_tracking test/control/test_p7_straight_tracking.cpp)
+ target_compile_options(test_p7_straight_tracking PRIVATE -std=c++14 -O2 -UNDEBUG -Wall -Wextra)
+ add_test(NAME p7_straight_tracking COMMAND test_p7_straight_tracking)
+ add_executable(test_p7_turn_timing test/control/test_p7_turn_timing.cpp)
+ target_compile_options(test_p7_turn_timing PRIVATE -std=c++14 -O2 -UNDEBUG -Wall -Wextra)
+ add_test(NAME p7_turn_timing COMMAND test_p7_turn_timing)
+ add_executable(test_p7_revalidation test/control/test_p7_revalidation.cpp)
+ target_compile_options(test_p7_revalidation PRIVATE -std=c++14 -O2 -UNDEBUG -Wall -Wextra)
+ add_test(NAME p7_reference_revalidation COMMAND test_p7_revalidation)
+ add_executable(test_p7_speed_preview test/control/test_p7_speed_preview.cpp)
+ target_compile_options(test_p7_speed_preview PRIVATE -std=c++14 -O2 -UNDEBUG -Wall -Wextra)
+ add_test(NAME p7_speed_preview COMMAND test_p7_speed_preview)
+ add_executable(test_p7_synchronized_preview test/control/test_p7_synchronized_preview.cpp)
+ target_compile_options(test_p7_synchronized_preview PRIVATE -std=c++14 -O2 -UNDEBUG -fno-access-control)
+ add_test(NAME p7_synchronized_preview COMMAND test_p7_synchronized_preview)
+ add_executable(test_p7_terminal_approach test/control/test_p7_terminal_approach.cpp)
+ target_compile_options(test_p7_terminal_approach PRIVATE -std=c++14 -O2 -UNDEBUG -fno-access-control)
+ add_test(NAME p7_terminal_approach COMMAND test_p7_terminal_approach)
+ add_executable(test_p7_terminal_handoff test/control/test_p7_terminal_handoff.cpp)
+ target_compile_options(test_p7_terminal_handoff PRIVATE -std=c++14 -O2 -UNDEBUG)
+ add_test(NAME p7_terminal_handoff COMMAND test_p7_terminal_handoff)
+ add_executable(test_p7_preview_exchange test/control/test_p7_preview_exchange.cpp)
+ target_compile_options(test_p7_preview_exchange PRIVATE -std=c++14 -O2 -UNDEBUG)
+ target_link_libraries(test_p7_preview_exchange ${catkin_LIBRARIES})
+ add_test(NAME p7_preview_exchange COMMAND test_p7_preview_exchange)
+endif()
+if(CATKIN_ENABLE_TESTING)
+ foreach(p6_test flatness config response feedback controller)
+  add_executable(test_p6_${p6_test} test/control/test_p6_${p6_test}.cpp)
+  target_compile_options(test_p6_${p6_test} PRIVATE -std=c++14 -O2 -UNDEBUG -Wall -Wextra)
+  add_test(NAME p6_${p6_test} COMMAND test_p6_${p6_test})
+ endforeach()
+endif()

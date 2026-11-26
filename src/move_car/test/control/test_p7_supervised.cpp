@@ -1,0 +1,26 @@
+#include "control/unified_control.h"
+#include <cassert>
+#include <limits>
+#include <iostream>
+using namespace unified_control;
+SupervisedGuard guard(){SupervisedGuard g;g.enabled=g.mapping_confirmed=true;g.command_topic="/cmd_vel";g.run_id="p7real_unit_001";g.terrain="smooth";g.operator_id="operator";g.mapping_evidence=std::string(64,'a');g.imu_frame="imu_link";g.speed_cap=.10;return g;}
+ControlRequest request(){ControlRequest r;r.supervised=guard();assert(r.supervised.acceptLease("p7real_unit_001|1",100.));r.steady_now=100.01;r.mode=ControlMode::NmpcFixed;r.now=5.;r.dt=1./30.;r.legacy={.3,.01};r.previous={.05,.01};r.previous_acceleration=0.;r.speed_cap=.10;r.limits.speed=.1;r.state.valid=r.state.causal=r.state.nominal_model_valid=true;r.state.stamp=r.state.receipt_stamp=4.99;r.state.maximum_source_age=.01;r.state.confidence=.35;r.state.speed=.05;r.state.steering=.01;r.state.yaw_rate=0.;r.reference.valid=true;r.reference.stamp=4.98;r.reference.sequence=11;r.history_valid=true;r.history_sequence=21;r.config_version=31;r.epoch=41;return r;}
+ControlCandidate candidate(const ControlRequest&r){ControlCandidate c;c.command={.05,.01};c.command_acceleration=0.;c.solve_ms=1.;c.created_stamp=4.995;c.snapshot_stamp=4.99;c.expected_apply_stamp=5.;c.propagated_speed=.05;c.propagated_steering=.01;c.sequence=51;c.epoch=r.epoch;c.reference_sequence=r.reference.sequence;c.config_version=r.config_version;c.history_base_sequence=r.history_sequence;c.valid=c.feasible=c.complete_substep_constraints=c.state_pair_validated=true;return c;}
+int main(){
+ auto g=guard();assert(g.configured());assert(!g.armed(100.));
+ assert(!g.acceptLease("p7real_wrong|1",100.));assert(!g.acceptLease("p7real_unit_001",100.));assert(!g.acceptLease("p7real_unit_001|01",100.));assert(!g.acceptLease("p7real_unit_001|0",100.));assert(!g.acceptLease("p7real_unit_001|18446744073709551616",100.));
+ assert(!g.acceptLease("p7real_unit_001|1",100.,true));assert(g.acceptLease("p7real_unit_001|1",100.));assert(!g.acceptLease("p7real_unit_001|1",100.01));assert(!g.acceptLease("p7real_unit_001|2",99.));assert(g.armed(100.11));assert(!g.armed(100.121));assert(!g.armed(99.));assert(!g.armed(std::numeric_limits<double>::quiet_NaN()));assert(g.acceptLease("p7real_unit_001|2",100.1));assert(g.armed(100.11));
+ auto bad=g;bad.speed_cap=.40001;assert(!bad.configured());bad=g;bad.speed_cap=std::numeric_limits<double>::quiet_NaN();assert(!bad.configured());bad=g;bad.speed_cap=-.01;assert(!bad.configured());bad=g;bad.command_topic="/cmd_vel_extra";assert(!bad.configured());bad=g;bad.operator_id="";assert(!bad.configured());bad=g;bad.mapping_evidence="";assert(!bad.configured());bad=g;bad.imu_frame="";assert(!bad.configured());bad=g;bad.run_id="p7real_";assert(!bad.configured());bad=g;bad.wheel_scale=1.;assert(!bad.configured());bad=g;bad.synthetic=true;assert(!bad.configured());bad=g;bad.mapping_confirmed=false;assert(!bad.configured());bad=g;bad.imu_yaw_sign=-1.;assert(!bad.configured());
+ auto normal=g;normal.speed_cap=.4;assert(normal.configured());normal.degraded_speed_limit=.2;assert(!normal.configured());
+ auto r=request();auto c=candidate(r);auto d=ControlArbiter::decide(r,&c);assert(d.selected_nmpc&&d.command.speed==.05);assert(!r.guard.permits());
+ c.valid=false;d=ControlArbiter::decide(r,&c);assert(d.fallback&&!d.selected_nmpc&&d.command.speed<=.1);c=candidate(r);c.command.speed=.11;d=ControlArbiter::decide(r,&c);assert(d.fallback&&d.command.speed<=.1);
+ r.steady_now=100.121;d=ControlArbiter::decide(r,&c);assert(d.safety_stop&&d.command.speed==0.);r.mode=ControlMode::LegacySlqr;d=ControlArbiter::decide(r);assert(d.safety_stop&&d.command.speed==0.);r.mode=ControlMode::NmpcShadow;d=ControlArbiter::decide(r);assert(d.safety_stop&&d.command.speed==0.);
+ r.legacy.steering=std::numeric_limits<double>::quiet_NaN();d=ControlArbiter::decide(r);assert(d.safety_stop&&finiteCommand(d.command)&&d.command.speed==0.);
+ r=request();r.safety_stop=true;d=ControlArbiter::decide(r,&c);assert(d.safety_stop&&d.command.speed==0.);r=request();c=candidate(r);c.model_adaptation_active=true;d=ControlArbiter::decide(r,&c);assert(d.fallback&&d.command.speed<=.1);
+ r=request();r.mode=ControlMode::LegacySlqr;d=ControlArbiter::decide(r);assert(d.command.speed==.1);r.supervised.enabled=false;d=ControlArbiter::decide(r);assert(d.command.speed==.3);
+ r=request();r.supervised.speed_cap=r.speed_cap=r.limits.speed=.4;r.state.speed=r.previous.speed=r.legacy.speed=.36;c=candidate(r);c.command.speed=c.propagated_speed=.36;d=ControlArbiter::decide(r,&c);assert(d.selected_nmpc&&d.command.speed>.32);
+ r.safety_stop=true;d=ControlArbiter::decide(r,&c);assert(d.command.speed==0.);r.safety_stop=false;r.steady_now=100.121;d=ControlArbiter::decide(r,&c);assert(d.command.speed==0.);
+ SimulationGuard simulation;simulation.isolated_test=simulation.allow_test_nmpc=true;simulation.run_id="p5_unit";simulation.command_topic="/control_research/p5_test/cmd";assert(simulation.permits());simulation.command_topic="/cmd_vel";assert(!simulation.permits());
+ assert(p7FixedMode("flat_nmpc_8"));assert(p7FixedMode("nmpc_12_fixed"));assert(p7FixedMode("flat_nmpc_slqr"));assert(!p7FixedMode("flat_nmpc_residual_slqr"));
+ std::cout<<"P7 guard, steady lease, capped selection/fallback and unchanged legacy/simulation pass\n";
+}

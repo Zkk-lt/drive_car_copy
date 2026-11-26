@@ -1,0 +1,263 @@
+baseline_version: 695f1665feec86fd82e97f82c42fa85930c6bef5
+evidence:
+- research_runs/p6_run2004_optimization_20261118/data/README.md
+- research_runs/p6_run2004_optimization_20261118/core_audit.md
+- research_runs/p6_run2004_optimization_20261118/README.md
+features:
+  adaptation_enabled: false
+  nmpc_enabled: false
+  terrain_estimation_enabled: false
+kind: terrain
+parameters:
+  heading_weight_scale:
+    basis: 'One predeclared development course-P95 cost normalization: effective heading
+      7*(near_P95/entry_P95)^2. Research balance, NOT a calibrated or real-validated
+      optimum; heldout tail tradeoffs retained.'
+    bounds:
+    - 0.75
+    - 1.5
+    calibration_status: unverified
+    class: C
+    source:
+      kind: synthetic
+      reference: research_runs/p6_response_refinement_20261118/heading_balance/manifest.json
+    uncertainty:
+      known: false
+      stddev: null
+    unit: '1'
+    valid_speed_range:
+    - 0.0
+    - 0.5
+    value: 1.239795846046904
+  lateral_weight_scale:
+    basis: Retain latest measured shadow trial effective lateral39 (26*1.5); no new
+      real closed-loop validation or optimum claim.
+    bounds:
+    - 0.75
+    - 1.5
+    calibration_status: unverified
+    class: C
+    source:
+      kind: source_audit
+      reference: experiment_runs/smooth_chart_20261118/p7real_20261118T152106_b01bf031/trial.json;
+        physical model unchanged.
+    uncertainty:
+      known: false
+      stddev: null
+    unit: '1'
+    valid_speed_range:
+    - 0.0
+    - 0.5
+    value: 1.5
+  smoothness_weight_scale:
+    basis: Retain scale1 (effective24). Single scale1.25/effective30 candidate worsened
+      nominal lateral, heading, speed and jerk; rejected.
+    bounds:
+    - 1.0
+    - 2.0
+    calibration_status: unverified
+    class: C
+    source:
+      kind: synthetic
+      reference: research_runs/p6_run1521_optimization_20261118/smoothness_candidate/summary.json
+    uncertainty:
+      known: false
+      stddev: null
+    unit: '1'
+    valid_speed_range:
+    - 0.0
+    - 0.5
+    value: 1.0
+  speed_cap:
+    basis: Explicit requested normal operating cap below unchanged S8 0.50 maximum.
+      Does not override following/curvature/error/braking/solver-failure constraints.
+    bounds:
+    - 0.0
+    - 0.4
+    calibration_status: unverified
+    class: C
+    source:
+      kind: source_audit
+      reference: S8 formal max_speed=0.50; operator requested smooth-only 0.40 on
+        2026-11-16. Research candidate, no performance validation.
+    uncertainty:
+      known: false
+      stddev: null
+    unit: m/s
+    valid_speed_range:
+    - 0.0
+    - 0.5
+    value: 0.4
+  speed_delay:
+    basis: Same uncalibrated P5 nominal model; no measured terrain-specific model
+      available
+    bounds:
+    - 0.0
+    - 0.7
+    calibration_status: unverified
+    class: B
+    source:
+      kind: source_audit
+      reference: P5 source default or immutable launch safety snapshot; no physical
+        calibration claim
+    uncertainty:
+      known: false
+      stddev: null
+    unit: s
+    valid_speed_range:
+    - 0.0
+    - 0.5
+    value: 0.2
+  speed_gain:
+    basis: Same uncalibrated P5 nominal model; no measured terrain-specific model
+      available
+    bounds:
+    - 0.5
+    - 1.5
+    calibration_status: unverified
+    class: B
+    source:
+      kind: source_audit
+      reference: P5 source default or immutable launch safety snapshot; no physical
+        calibration claim
+    uncertainty:
+      known: false
+      stddev: null
+    unit: '1'
+    valid_speed_range:
+    - 0.0
+    - 0.5
+    value: 1.0
+  speed_tau:
+    basis: Same uncalibrated P5 nominal model; no measured terrain-specific model
+      available
+    bounds:
+    - 0.05
+    - 1.0
+    calibration_status: unverified
+    class: B
+    source:
+      kind: source_audit
+      reference: P5 source default or immutable launch safety snapshot; no physical
+        calibration claim
+    uncertainty:
+      known: false
+      stddev: null
+    unit: s
+    valid_speed_range:
+    - 0.0
+    - 0.5
+    value: 0.2
+  speed_weight_scale:
+    basis: unvalidated seed; no friction ordering by terrain; unknown speed cap is
+      a future shadow constraint
+    bounds:
+    - 0.5
+    - 1.25
+    calibration_status: unverified
+    class: C
+    source:
+      kind: source_audit
+      reference: P5 source default or immutable launch safety snapshot; no physical
+        calibration claim
+    uncertainty:
+      known: false
+      stddev: null
+    unit: '1'
+    valid_speed_range:
+    - 0.0
+    - 0.5
+    value: 1.0
+  steering_delay:
+    basis: Same uncalibrated P5 nominal model; no measured terrain-specific model
+      available
+    bounds:
+    - 0.0
+    - 0.7
+    calibration_status: unverified
+    class: B
+    source:
+      kind: source_audit
+      reference: P5 source default or immutable launch safety snapshot; no physical
+        calibration claim
+    uncertainty:
+      known: false
+      stddev: null
+    unit: s
+    valid_speed_range:
+    - 0.0
+    - 0.5
+    value: 0.325
+  steering_gain:
+    basis: Same uncalibrated P5 nominal model; no measured terrain-specific model
+      available
+    bounds:
+    - 0.5
+    - 1.5
+    calibration_status: unverified
+    class: B
+    source:
+      kind: source_audit
+      reference: P5 source default or immutable launch safety snapshot; no physical
+        calibration claim
+    uncertainty:
+      known: false
+      stddev: null
+    unit: '1'
+    valid_speed_range:
+    - 0.0
+    - 0.5
+    value: 1.0
+  steering_tau:
+    basis: Same uncalibrated P5 nominal model; no measured terrain-specific model
+      available
+    bounds:
+    - 0.05
+    - 1.0
+    calibration_status: unverified
+    class: B
+    source:
+      kind: source_audit
+      reference: P5 source default or immutable launch safety snapshot; no physical
+        calibration claim
+    uncertainty:
+      known: false
+      stddev: null
+    unit: s
+    valid_speed_range:
+    - 0.0
+    - 0.5
+    value: 0.44
+  yaw_gain:
+    basis: Receipt-domain yaw prediction fit on three whole smooth runs. Later smooth
+      run held out.
+    bounds:
+    - 0.5
+    - 1.5
+    calibration_status: unverified
+    class: B
+    source:
+      kind: real_calibration
+      reference: research_runs/p7_smooth_response_20261119/yaw_gain_report.json sha256:1e372c18c063a7c44a4a8173111ad77fdab8dff87313c314ca0072fdffe9056f
+    uncertainty:
+      known: false
+      stddev: null
+    unit: '1'
+    valid_speed_range:
+    - 0.0
+    - 0.5
+    value: 0.9569791928640006
+response_policy:
+  allowed_channels: []
+  evidence_kind: missing_evidence
+  evidence_sha: null
+  low_confidence_strategy: bounded_return_to_nominal
+  minimum_confidence: null
+schema_version: 2
+status: research_unvalidated
+terrain: smooth
+valid_range:
+  deployment: isolated_simulation_only
+  direction: forward
+  max_speed_mps: 0.5
+version: p6-smooth-gn-local-poll-20261118

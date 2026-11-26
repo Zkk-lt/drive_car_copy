@@ -1,0 +1,264 @@
+baseline_version: 695f1665feec86fd82e97f82c42fa85930c6bef5
+evidence:
+- 'P5 source audit: uncalibrated model seed; not evidence of real-vehicle NMPC performance'
+- P6 isolated-research schema; original production and schema1 files untouched
+features:
+  adaptation_enabled: false
+  nmpc_enabled: false
+  terrain_estimation_enabled: false
+kind: terrain
+parameters:
+  heading_weight_scale:
+    basis: unvalidated seed; no friction ordering by terrain; unknown speed cap is
+      a future shadow constraint
+    bounds:
+    - 0.75
+    - 1.5
+    calibration_status: unverified
+    class: C
+    source:
+      kind: source_audit
+      reference: P5 source default or immutable launch safety snapshot; no physical
+        calibration claim
+    uncertainty:
+      known: false
+      stddev: null
+    unit: '1'
+    valid_speed_range:
+    - 0.0
+    - 0.5
+    value: 1.0
+  lateral_weight_scale:
+    basis: unvalidated seed; no friction ordering by terrain; unknown speed cap is
+      a future shadow constraint
+    bounds:
+    - 0.75
+    - 1.5
+    calibration_status: unverified
+    class: C
+    source:
+      kind: source_audit
+      reference: P5 source default or immutable launch safety snapshot; no physical
+        calibration claim
+    uncertainty:
+      known: false
+      stddev: null
+    unit: '1'
+    valid_speed_range:
+    - 0.0
+    - 0.5
+    value: 1.0
+  smoothness_weight_scale:
+    basis: unvalidated seed; no friction ordering by terrain; unknown speed cap is
+      a future shadow constraint
+    bounds:
+    - 1.0
+    - 2.0
+    calibration_status: unverified
+    class: C
+    source:
+      kind: source_audit
+      reference: P5 source default or immutable launch safety snapshot; no physical
+        calibration claim
+    uncertainty:
+      known: false
+      stddev: null
+    unit: '1'
+    valid_speed_range:
+    - 0.0
+    - 0.5
+    value: 1.0
+  speed_cap:
+    basis: unvalidated seed; no friction ordering by terrain; unknown speed cap is
+      a future shadow constraint
+    bounds:
+    - 0.0
+    - 0.3
+    calibration_status: unverified
+    class: C
+    source:
+      kind: source_audit
+      reference: P5 source default or immutable launch safety snapshot; no physical
+        calibration claim
+    uncertainty:
+      known: false
+      stddev: null
+    unit: m/s
+    valid_speed_range:
+    - 0.0
+    - 0.5
+    value: 0.3
+  speed_delay:
+    basis: Same uncalibrated P5 nominal model; no measured terrain-specific model
+      available
+    bounds:
+    - 0.0
+    - 0.7
+    calibration_status: unverified
+    class: B
+    source:
+      kind: source_audit
+      reference: P5 source default or immutable launch safety snapshot; no physical
+        calibration claim
+    uncertainty:
+      known: false
+      stddev: null
+    unit: s
+    valid_speed_range:
+    - 0.0
+    - 0.5
+    value: 0.2
+  speed_gain:
+    basis: Same uncalibrated P5 nominal model; no measured terrain-specific model
+      available
+    bounds:
+    - 0.5
+    - 1.5
+    calibration_status: unverified
+    class: B
+    source:
+      kind: source_audit
+      reference: P5 source default or immutable launch safety snapshot; no physical
+        calibration claim
+    uncertainty:
+      known: false
+      stddev: null
+    unit: '1'
+    valid_speed_range:
+    - 0.0
+    - 0.5
+    value: 1.0
+  speed_tau:
+    basis: Same uncalibrated P5 nominal model; no measured terrain-specific model
+      available
+    bounds:
+    - 0.05
+    - 1.0
+    calibration_status: unverified
+    class: B
+    source:
+      kind: source_audit
+      reference: P5 source default or immutable launch safety snapshot; no physical
+        calibration claim
+    uncertainty:
+      known: false
+      stddev: null
+    unit: s
+    valid_speed_range:
+    - 0.0
+    - 0.5
+    value: 0.2
+  speed_weight_scale:
+    basis: unvalidated seed; no friction ordering by terrain; unknown speed cap is
+      a future shadow constraint
+    bounds:
+    - 0.5
+    - 1.25
+    calibration_status: unverified
+    class: C
+    source:
+      kind: source_audit
+      reference: P5 source default or immutable launch safety snapshot; no physical
+        calibration claim
+    uncertainty:
+      known: false
+      stddev: null
+    unit: '1'
+    valid_speed_range:
+    - 0.0
+    - 0.5
+    value: 1.0
+  steering_delay:
+    basis: Same uncalibrated P5 nominal model; no measured terrain-specific model
+      available
+    bounds:
+    - 0.0
+    - 0.7
+    calibration_status: unverified
+    class: B
+    source:
+      kind: source_audit
+      reference: P5 source default or immutable launch safety snapshot; no physical
+        calibration claim
+    uncertainty:
+      known: false
+      stddev: null
+    unit: s
+    valid_speed_range:
+    - 0.0
+    - 0.5
+    value: 0.325
+  steering_gain:
+    basis: Same uncalibrated P5 nominal model; no measured terrain-specific model
+      available
+    bounds:
+    - 0.5
+    - 1.5
+    calibration_status: unverified
+    class: B
+    source:
+      kind: source_audit
+      reference: P5 source default or immutable launch safety snapshot; no physical
+        calibration claim
+    uncertainty:
+      known: false
+      stddev: null
+    unit: '1'
+    valid_speed_range:
+    - 0.0
+    - 0.5
+    value: 1.0
+  steering_tau:
+    basis: Same uncalibrated P5 nominal model; no measured terrain-specific model
+      available
+    bounds:
+    - 0.05
+    - 1.0
+    calibration_status: unverified
+    class: B
+    source:
+      kind: source_audit
+      reference: P5 source default or immutable launch safety snapshot; no physical
+        calibration claim
+    uncertainty:
+      known: false
+      stddev: null
+    unit: s
+    valid_speed_range:
+    - 0.0
+    - 0.5
+    value: 0.44
+  yaw_gain:
+    basis: Same uncalibrated P5 nominal model; no measured terrain-specific model
+      available
+    bounds:
+    - 0.5
+    - 1.5
+    calibration_status: unverified
+    class: B
+    source:
+      kind: source_audit
+      reference: P5 source default or immutable launch safety snapshot; no physical
+        calibration claim
+    uncertainty:
+      known: false
+      stddev: null
+    unit: '1'
+    valid_speed_range:
+    - 0.0
+    - 0.5
+    value: 1.0
+response_policy:
+  allowed_channels: []
+  evidence_kind: missing_evidence
+  evidence_sha: null
+  low_confidence_strategy: bounded_return_to_nominal
+  minimum_confidence: null
+schema_version: 2
+status: research_unvalidated
+terrain: asphalt
+valid_range:
+  deployment: isolated_simulation_only
+  direction: forward
+  max_speed_mps: 0.5
+version: p6-source-audit-v1

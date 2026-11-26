@@ -1,0 +1,20 @@
+<launch>
+  <!-- Reuses the existing nodes and gains. No chassis driver is launched.
+       Both SLQR and shadow results are isolated from the vehicle command topic. -->
+  <arg name="runtime_file"/>
+  <arg name="run_id"/>
+  <arg name="controller_log_dir" default="/tmp/control_shadow_controller"/>
+  <arg name="reference_log_dir" default="/tmp/control_shadow_reference"/>
+  <group>
+    <remap from="/cmd_vel" to="/control_research/isolated_command"/>
+    <include file="$(find move_car)/launch/movecar_improved.launch"/>
+    <include file="$(find move_car)/launch/trajectory_reconstructor.launch"/>
+  </group>
+  <param name="/control_research/run_id" value="$(arg run_id)" type="str"/>
+  <rosparam command="load" file="$(arg runtime_file)" ns="/publish_speed_turn"/>
+  <param name="/publish_speed_turn/enable_adaptive_shadow" value="true"/>
+  <param name="/publish_speed_turn/enable_research_telemetry" value="true"/>
+  <param name="/trajectory_reconstructor/enable_research_telemetry" value="true"/>
+  <param name="/publish_speed_turn/debug_log_dir" value="$(arg controller_log_dir)"/>
+  <param name="/trajectory_reconstructor/debug_log_dir" value="$(arg reference_log_dir)"/>
+</launch>

@@ -1,0 +1,247 @@
+baseline_version: 695f1665feec86fd82e97f82c42fa85930c6bef5
+channel_policies:
+  longitudinal:
+    allow_receipt_identification: false
+    bias_verified: false
+    condition_dwell_s: null
+    condition_enter_fraction: null
+    condition_exit_fraction: null
+    delay_verified: false
+    enabled: false
+    evidence_kind: missing_evidence
+    evidence_sha: null
+    filter_s: null
+    forgetting_s: null
+    gain_rate: null
+    max_covariance: null
+    max_gain: null
+    max_innovation: null
+    max_tau: null
+    min_confidence: null
+    min_excitation: null
+    min_gain: null
+    min_information: null
+    min_rank_ratio: null
+    min_samples: null
+    min_speed: null
+    min_tau: null
+    prediction_improvement: null
+    reason: missing_evidence
+    residual_bound: null
+    residual_filter_s: null
+    residual_rate: null
+    return_rate: null
+    stale_s: null
+    sync_s: null
+    tau_rate: null
+    timing_verified: false
+  roughness:
+    allow_receipt_identification: false
+    bias_verified: false
+    condition_dwell_s: null
+    condition_enter_fraction: null
+    condition_exit_fraction: null
+    delay_verified: false
+    enabled: false
+    evidence_kind: missing_evidence
+    evidence_sha: null
+    filter_s: null
+    forgetting_s: null
+    gain_rate: null
+    max_covariance: null
+    max_gain: null
+    max_innovation: null
+    max_tau: null
+    min_confidence: null
+    min_excitation: null
+    min_gain: null
+    min_information: null
+    min_rank_ratio: null
+    min_samples: null
+    min_speed: null
+    min_tau: null
+    prediction_improvement: null
+    reason: missing_evidence
+    residual_bound: null
+    residual_filter_s: null
+    residual_rate: null
+    return_rate: null
+    stale_s: null
+    sync_s: null
+    tau_rate: null
+    timing_verified: false
+  slip:
+    allow_receipt_identification: false
+    bias_verified: false
+    condition_dwell_s: null
+    condition_enter_fraction: null
+    condition_exit_fraction: null
+    delay_verified: false
+    enabled: false
+    evidence_kind: missing_evidence
+    evidence_sha: null
+    filter_s: null
+    forgetting_s: null
+    gain_rate: null
+    max_covariance: null
+    max_gain: null
+    max_innovation: null
+    max_tau: null
+    min_confidence: null
+    min_excitation: null
+    min_gain: null
+    min_information: null
+    min_rank_ratio: null
+    min_samples: null
+    min_speed: null
+    min_tau: null
+    prediction_improvement: null
+    reason: missing_evidence
+    residual_bound: null
+    residual_filter_s: null
+    residual_rate: null
+    return_rate: null
+    stale_s: null
+    sync_s: null
+    tau_rate: null
+    timing_verified: false
+  steering:
+    allow_receipt_identification: false
+    bias_verified: false
+    condition_dwell_s: null
+    condition_enter_fraction: null
+    condition_exit_fraction: null
+    delay_verified: false
+    enabled: false
+    evidence_kind: missing_evidence
+    evidence_sha: null
+    filter_s: null
+    forgetting_s: null
+    gain_rate: null
+    max_covariance: null
+    max_gain: null
+    max_innovation: null
+    max_tau: null
+    min_confidence: null
+    min_excitation: null
+    min_gain: null
+    min_information: null
+    min_rank_ratio: null
+    min_samples: null
+    min_speed: null
+    min_tau: null
+    prediction_improvement: null
+    reason: missing_evidence
+    residual_bound: null
+    residual_filter_s: null
+    residual_rate: null
+    return_rate: null
+    stale_s: null
+    sync_s: null
+    tau_rate: null
+    timing_verified: false
+  yaw_disturbance:
+    allow_receipt_identification: false
+    bias_verified: false
+    condition_dwell_s: null
+    condition_enter_fraction: null
+    condition_exit_fraction: null
+    delay_verified: false
+    enabled: false
+    evidence_kind: missing_evidence
+    evidence_sha: null
+    filter_s: null
+    forgetting_s: null
+    gain_rate: null
+    max_covariance: null
+    max_gain: null
+    max_innovation: null
+    max_tau: null
+    min_confidence: null
+    min_excitation: null
+    min_gain: null
+    min_information: null
+    min_rank_ratio: null
+    min_samples: null
+    min_speed: null
+    min_tau: null
+    prediction_improvement: null
+    reason: missing_evidence
+    residual_bound: null
+    residual_filter_s: null
+    residual_rate: null
+    return_rate: null
+    stale_s: null
+    sync_s: null
+    tau_rate: null
+    timing_verified: false
+  yaw_gain:
+    allow_receipt_identification: false
+    bias_verified: false
+    condition_dwell_s: null
+    condition_enter_fraction: null
+    condition_exit_fraction: null
+    delay_verified: false
+    enabled: false
+    evidence_kind: missing_evidence
+    evidence_sha: null
+    filter_s: null
+    forgetting_s: null
+    gain_rate: null
+    max_covariance: null
+    max_gain: null
+    max_innovation: null
+    max_tau: null
+    min_confidence: null
+    min_excitation: null
+    min_gain: null
+    min_information: null
+    min_rank_ratio: null
+    min_samples: null
+    min_speed: null
+    min_tau: null
+    prediction_improvement: null
+    reason: missing_evidence
+    residual_bound: null
+    residual_filter_s: null
+    residual_rate: null
+    return_rate: null
+    stale_s: null
+    sync_s: null
+    tau_rate: null
+    timing_verified: false
+dynamic_conditions:
+  classification_status: unvalidated
+  composition: independent_flags
+  flags:
+  - yaw_underresponse
+  - steering_lag
+  - longitudinal_weak
+  - vibration_high
+  - low_confidence
+evidence:
+- 'P5 source audit: uncalibrated model seed; not evidence of real-vehicle NMPC performance'
+- P6 isolated-research schema; original production and schema1 files untouched
+features:
+  adaptation_enabled: false
+  nmpc_enabled: false
+  terrain_estimation_enabled: false
+kind: adaptation
+parameters: {}
+scene_transition:
+  confidence_hysteresis: 0.15
+  dwell_s: 2.0
+  enabled: false
+  evidence_kind: inherited_unvalidated_design_seed
+  evidence_reference: Schema1 adaptation filter_tau=3, switch_dwell=2, switch_hysteresis=.15;
+    no real calibration evidence
+  ramp_time_s: 3.0
+schema_version: 2
+status: research_unvalidated
+terrain: all
+valid_range:
+  deployment: isolated_simulation_only
+  direction: forward
+  max_speed_mps: 0.5
+version: p6-source-audit-v1
+weights_online_enabled: false

@@ -1,4 +1,23 @@
 #include <ros/ros.h>
+#include <ros/master.h>
+#include <move_car/ControlResearchTelemetry.h>
+#include "control/research_ros_bridge.h"
+#include "control/unified_control.h"
+#include "control/p7_terminal_handoff.h"
+#include "control/p7_preview_exchange.h"
+#include "control/p7_publication_guard.h"
+#include "control/local_state_initializer.h"
+#include "control/qualified_steering_sample.h"
+#include "control/p7_speed_policy.h"
+#include <move_car/P5ControlRequest.h>
+#include <move_car/P5ControlCandidate.h>
+#include <move_car/P5PublishedCommand.h>
+#include <move_car/P5ControlDiagnostics.h>
+#include "control/p6_ros_bridge.h"
+#include "control/p7_reference_revalidation.h"
+#include "control/p7_steering_handoff.h"
+#include <chrono>
+#include <ctime>
 
 #include <geometry_msgs/PoseArray.h>
 #include <geometry_msgs/TransformStamped.h>
@@ -157,9 +176,13 @@ struct TrackingPose {
 };
 
 struct ReferenceRateConstraint {
+    bool prefix_only=false;
+    bool following_geometry=false;
     uint64_t geometry_stamp_ns = 0;
     ros::Time received;
     double speed_cap = std::numeric_limits<double>::infinity();
+    double source_age = -1.;
+    double progress_age = -1.;
     bool valid = false;
 
     bool matches(const ros::Time& stamp,const ros::Time& now,double timeout) const {
@@ -247,6 +270,10 @@ struct PathTrackingProblem {
 };
 
 struct ControllerDebug {
+    const char* p7_preview_status=nullptr;
+    double p7_prefix_preview_target=-1.;
+    double p7_prefix_progress_stamp=0.;
+    bool p7_verified_prefix=false;
     bool reference_braking_only = false;
     bool geometry_rate_matched = false;
     uint64_t geometry_rate_stamp_ns = 0;
@@ -1068,6 +1095,11 @@ public:
             out.effective_nearest = -1.0;
         }
         return out;
+    }
+
+    bool needsStop(const ros::Time& now) {
+        updateLatch(now);
+        return active_;
     }
 
 private:
@@ -3526,7 +3558,20 @@ private:
 
 class SpatialSLQR {
 public:
+    static constexpr std::size_t preview_capacity=64;
+    struct PreviewJob {
+        unified_control::PreviewContext context;
+        std::array<double,preview_capacity> curvature{};
+        std::size_t count=0;
+        double lateral=0., heading=0., previous=0., speed=0., steering=0., dt=0.;
+    };
+    struct PreviewResult {
+        unified_control::PreviewContext context;
+        std::array<double,preview_capacity> commands{};
+        std::size_t count=0;
+    };
     struct SolveInfo {
+        unsigned iterations = 0;
         double delta = 0.0;
         double cost = 0.0;
         double barrier_margin = 1.0;
@@ -3634,7 +3679,14 @@ public:
     static void advanceCenter(double curvature,double speed,double command,
                               double dt,double tau,double wheelbase,
                               CenterState& z,double& progress) {
-        const double mid_delta=command+(z[2]-command)*std::exp(-0.5*dt/tau);
+        advanceCenterWithDecay(curvature,speed,command,dt,wheelbase,
+                               std::exp(-0.5*dt/tau),std::exp(-dt/tau),z,progress);
+    }
+
+    static void advanceCenterWithDecay(double curvature,double speed,double command,double dt,
+                                        double wheelbase,double half_decay,double decay,
+                                        CenterState& z,double& progress) {
+        const double mid_delta=command+(z[2]-command)*half_decay;
         const double kr=std::tan(mid_delta)/wheelbase;
         auto derivative=[&](double ey,double heading) {
             const double g=std::max(0.15,1.-curvature*ey);
@@ -3646,11 +3698,12 @@ public:
         const Eigen::Vector3d a=derivative(z[0],z[1]);
         const Eigen::Vector3d b=derivative(z[0]+0.5*dt*a[0],z[1]+0.5*dt*a[1]);
         z[0]+=dt*b[0];z[1]=wrapAngle(z[1]+dt*b[1]);
-        z[2]=command+(z[2]-command)*std::exp(-dt/tau);
+        z[2]=command+(z[2]-command)*decay;
         z[3]=command;progress+=dt*b[2];
     }
 
-    CenterState centerStep(CenterState z,double u,double kappa) const {
+    CenterState centerStep(CenterState z,double u,double kappa,
+                           double half_step_decay,double step_decay) const {
         double distance=0.,elapsed=0.;
         const double speed=std::max(0.05,runtime_speed_);
         const double maximum_time=3.*ds_/speed;
@@ -3659,7 +3712,10 @@ public:
             const double sdot=speed*(std::cos(z[1])-0.30*kr*std::sin(z[1]))/
                                 std::max(0.15,1.-kappa*z[0]);
             const double dt=std::min(0.02,(ds_-distance)/std::max(0.02,sdot));
-            advanceCenter(kappa,speed,u,dt,actuator_tau_,wheelbase_,z,distance);
+            if(dt==0.02)
+                advanceCenterWithDecay(kappa,speed,u,dt,wheelbase_,half_step_decay,step_decay,z,distance);
+            else
+                advanceCenter(kappa,speed,u,dt,actuator_tau_,wheelbase_,z,distance);
             elapsed+=dt;
         }
         return z;
@@ -3712,6 +3768,11 @@ public:
         initial<<e_y,e_theta,predicted_delta_,previous_delta;
         const double future_step=std::min(0.20,command_rate_*ds_/
                                                        std::max(0.05,runtime_speed_));
+        const double half_step_decay=std::exp(-0.5*0.02/actuator_tau_);
+        const double step_decay=std::exp(-0.02/actuator_tau_);
+        const auto predict=[&](const CenterState& z,double u,double curvature) {
+            return centerStep(z,u,curvature,half_step_decay,step_decay);
+        };
         auto project=[&](std::vector<double>& controls) {
             double last=previous_delta;
             for(int k=0;k<n;++k) {
@@ -3721,20 +3782,24 @@ public:
                 last=controls[k];
             }
         };
-        std::vector<double> nominal(n,previous_delta);
+        std::vector<double> nominal(n,previous_delta), feedforward_delta(n), feed(n),candidate(n),trial(n);
+        std::vector<CenterState> states(n+1);
+        std::vector<Eigen::Matrix<double,1,4>> gains(n);
         // Do not shift a whole 0.10 m spatial cell every 33 ms control cycle.
-        for(int k=0;k<n;++k)
-            nominal[k]=last_feasible_.empty() ? feedforward(curvatures[k]) :
+        for(int k=0;k<n;++k) {
+            feedforward_delta[k]=feedforward(curvatures[k]);
+            nominal[k]=last_feasible_.empty() ? feedforward_delta[k] :
                 last_feasible_[std::min(static_cast<size_t>(k),last_feasible_.size()-1)];
+        }
         project(nominal);
         auto cost=[&](const std::vector<double>& controls) {
             CenterState z=initial;double value=0.;
             for(int k=0;k<n;++k) {
                 const double eta=z[1]+centerBeta(z[2],wheelbase_);
                 value+=q_y_*z[0]*z[0]+q_theta_*eta*eta+
-                    r_delta_*square(controls[k])+r_feedforward_*square(controls[k]-feedforward(curvatures[k]))+
+                    r_delta_*square(controls[k])+r_feedforward_*square(controls[k]-feedforward_delta[k])+
                     r_delta_rate_*square(controls[k]-z[3]);
-                z=centerStep(z,controls[k],curvatures[k]);
+                z=predict(z,controls[k],curvatures[k]);
                 if(!z.allFinite() || std::fabs(z[1])>1.5) return 1e15;
             }
             return value+q_terminal_y_*z[0]*z[0]+
@@ -3742,10 +3807,9 @@ public:
         };
         double best_cost=cost(nominal);bool solved=false;
         for(int iteration=0;iteration<3;++iteration) {
-            std::vector<CenterState> states(n+1);states[0]=initial;
-            for(int k=0;k<n;++k)states[k+1]=centerStep(states[k],nominal[k],curvatures[k]);
-            std::vector<Eigen::Matrix<double,1,4>> gains(n);
-            std::vector<double> feed(n);
+            info.iterations=iteration+1;
+            states[0]=initial;
+            for(int k=0;k<n;++k)states[k+1]=predict(states[k],nominal[k],curvatures[k]);
             auto headingCost=[&](const CenterState& z,double qy,double qt,
                                  CenterMatrix& q,CenterState& linear) {
                 CenterState g=CenterState::Zero();g[1]=1.;g[2]=betaDerivative(z[2],wheelbase_);
@@ -3759,19 +3823,22 @@ public:
                 const CenterState& z=states[k];
                 CenterMatrix a;CenterState b;
                 const double epsilon=1e-5;
-                for(int j=0;j<4;++j) {
+                // centerStep never reads previous command z[3], and writes u to it.
+                // Its state derivative is exactly zero even at a substep boundary.
+                a.col(3).setZero();
+                for(int j=0;j<3;++j) {
                     CenterState plus=z,minus=z;plus[j]+=epsilon;minus[j]-=epsilon;
-                    a.col(j)=(centerStep(plus,nominal[k],curvatures[k])-
-                              centerStep(minus,nominal[k],curvatures[k]))/(2.*epsilon);
+                    a.col(j)=(predict(plus,nominal[k],curvatures[k])-
+                              predict(minus,nominal[k],curvatures[k]))/(2.*epsilon);
                 }
-                b=(centerStep(z,nominal[k]+epsilon,curvatures[k])-
-                   centerStep(z,nominal[k]-epsilon,curvatures[k]))/(2.*epsilon);
+                b=(predict(z,nominal[k]+epsilon,curvatures[k])-
+                   predict(z,nominal[k]-epsilon,curvatures[k]))/(2.*epsilon);
                 const CenterState c=states[k+1]-a*z-b*nominal[k];
                 CenterMatrix q;CenterState qv;
                 headingCost(z,q_y_,q_theta_,q,qv);q(3,3)+=r_delta_rate_;
                 CenterState cross=CenterState::Zero();cross[3]=-r_delta_rate_;
                 const double r=r_delta_+r_feedforward_+r_delta_rate_;
-                const double rv=-r_feedforward_*feedforward(curvatures[k]);
+                const double rv=-r_feedforward_*feedforward_delta[k];
                 const CenterState pc=p*c+pv,xu=cross+a.transpose()*p*b;
                 const double uu=r+b.dot(p*b)+1e-6,uv=rv+b.dot(pc);
                 gains[k]=(xu/uu).transpose();feed[k]=uv/uu;
@@ -3782,17 +3849,16 @@ public:
             }
             if(!finite)break;
             solved=true;
-            std::vector<double> candidate(n);CenterState z=initial;
+            CenterState z=initial;
             double last=previous_delta;
             for(int k=0;k<n;++k) {
                 const double step=k==0 ? command_rate_*command_dt_ : future_step;
                 candidate[k]=clampValue(-(gains[k].dot(z)+feed[k]),last-step,last+step);
                 candidate[k]=clampValue(candidate[k],-runtime_max_steer_,runtime_max_steer_);
-                z=centerStep(z,candidate[k],curvatures[k]);last=candidate[k];
+                z=predict(z,candidate[k],curvatures[k]);last=candidate[k];
             }
             bool improved=false;
             for(double alpha : {1.,0.5,0.25}) {
-                std::vector<double> trial(n);
                 for(int k=0;k<n;++k)trial[k]=nominal[k]+alpha*(candidate[k]-nominal[k]);
                 const double trial_cost=cost(trial);
                 if(trial_cost<=best_cost) {
@@ -3810,6 +3876,87 @@ public:
 
     double profileFeedforward(double curvature) const {
         return feedforward(curvature);
+    }
+
+    bool supportsPreviewExchange() const {
+        return horizon_steps_>=2 && static_cast<std::size_t>(horizon_steps_)<=preview_capacity;
+    }
+
+    PreviewJob previewJob(const unified_control::PreviewContext& context, double lateral,
+                          double heading, double previous, const std::vector<double>& curvature) const {
+        PreviewJob result;
+        result.context=context;
+        result.count=std::min(static_cast<std::size_t>(horizon_steps_),curvature.size());
+        std::copy_n(curvature.begin(),result.count,result.curvature.begin());
+        result.lateral=lateral; result.heading=heading; result.previous=previous;
+        result.speed=runtime_speed_; result.steering=predicted_delta_; result.dt=command_dt_;
+        return result;
+    }
+
+    PreviewResult preparePreview(const PreviewJob& job) {
+        PreviewResult result;
+        result.context=job.context;
+        runtime_speed_=job.speed;
+        setActuatorState(job.steering,job.dt);
+        const std::vector<double> curvature(job.curvature.begin(),job.curvature.begin()+job.count);
+        SolveInfo info;
+        solve(job.lateral,job.heading,curvature,job.previous,info);
+        if (info.solver_ok) {
+            result.count=last_feasible_.size();
+            std::copy(last_feasible_.begin(),last_feasible_.end(),result.commands.begin());
+        } else {
+            last_feasible_.clear();
+        }
+        return result;
+    }
+
+    // Reproject every input from the actual held steering, and rerun the
+    // current geometry with the current state. The worker's first input is
+    // never forwarded as a command.
+    bool replayPreview(const PreviewJob& job, const PreviewResult& prepared, SolveInfo& info) const {
+        if (prepared.count<job.count || job.count<2 ||
+            !std::isfinite(job.lateral) || !std::isfinite(job.heading) ||
+            std::abs(job.lateral)>error_guard_y_ || std::abs(job.heading)>error_guard_theta_) return false;
+        using Clock=unified_control::PreviewContext::Clock;
+        const auto deadline=Clock::now()+std::chrono::milliseconds(1);
+        const double half_decay=std::exp(-0.5*0.02/actuator_tau_);
+        const double decay=std::exp(-0.02/actuator_tau_);
+        const double future_step=std::min(0.20,command_rate_*ds_/std::max(0.05,runtime_speed_));
+        CenterState z, baseline;
+        z<<job.lateral,job.heading,predicted_delta_,job.previous;
+        baseline=z;
+        double cost=0., baseline_cost=0., first=job.previous;
+        for (std::size_t k=0;k<job.count;++k) {
+            if (Clock::now()>=deadline || !std::isfinite(job.curvature[k]) ||
+                !std::isfinite(prepared.commands[k])) return false;
+            const double step=k==0 ? command_rate_*command_dt_ : future_step;
+            const double curvature=job.curvature[k], reference=feedforward(curvature);
+            auto advance=[&](CenterState& state,double target,double& value) {
+                const double u=clampValue(clampValue(target,state[3]-step,state[3]+step),
+                                          -runtime_max_steer_,runtime_max_steer_);
+                const double eta=state[1]+centerBeta(state[2],wheelbase_);
+                value+=q_y_*square(state[0])+q_theta_*square(eta)+r_delta_*square(u)+
+                    r_feedforward_*square(u-reference)+r_delta_rate_*square(u-state[3]);
+                state=centerStep(state,u,curvature,half_decay,decay);
+                return u;
+            };
+            const double u=advance(z,prepared.commands[k],cost);
+            advance(baseline,reference,baseline_cost);
+            if (k==0) first=u;
+            if (!z.allFinite() || std::abs(z[1])>1.5 || !baseline.allFinite()) return false;
+        }
+        auto terminal_cost=[&](const CenterState& state) {
+            return q_terminal_y_*square(state[0])+
+                q_terminal_theta_*square(state[1]+centerBeta(state[2],wheelbase_));
+        };
+        cost+=terminal_cost(z);
+        baseline_cost+=terminal_cost(baseline);
+        if (Clock::now()>=deadline || !std::isfinite(cost) || !std::isfinite(baseline_cost) ||
+            cost>fallback_cost_ratio_*baseline_cost+1e-9) return false;
+        info.delta=first;
+        info.cost=cost;
+        info.barrier_margin=std::max(1e-6,1.-square(first/runtime_max_steer_));
+        return true;
     }
 
 private:
@@ -3913,6 +4060,16 @@ public:
     VirtualTowingNode() : nh_(), pnh_("~"), tf_listener_(tf_buffer_) {
         node_start_stamp_ = ros::Time::now();
         loadParameters();
+        research_enabled_=pnh_.param("enable_research_telemetry",false);
+        nh_.param<std::string>("/control_research/run_id",research_run_id_,"");
+        if(research_run_id_.size()>80 || research_run_id_.find_first_not_of(
+            "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-")!=std::string::npos) {
+            ROS_WARN("Ignoring invalid /control_research/run_id");research_run_id_.clear();
+        }
+        if(research_enabled_)
+            research_pub_=nh_.advertise<move_car::ControlResearchTelemetry>(
+                "/control_research/controller",2);
+        research_shadow_.configure(nh_,pnh_,research_run_id_);
         initializeDebugLogs();
         cps_.configure(pnh_);
         lead_observer_.configure(pnh_);
@@ -3947,7 +4104,21 @@ public:
         imu_sub_ = nh_.subscribe(imu_topic_, 50, &VirtualTowingNode::imuCallback, this);
         ned_odom_sub_ = nh_.subscribe(ned_odom_topic_, 10, &VirtualTowingNode::nedOdomCallback, this);
         system_speed_sub_ = nh_.subscribe(system_speed_topic_, 10, &VirtualTowingNode::systemSpeedCallback, this);
+        configureP7Guard();
+        if(pnh_.param("p6_enabled",false)){
+            unified_control::SimulationGuard guard;guard.isolated_test=pnh_.param("p5_isolated_test",false);
+            guard.allow_test_nmpc=pnh_.param("p5_allow_test_nmpc",false);guard.command_topic=nh_.resolveName(cmd_topic_);guard.run_id=research_run_id_;
+            if(!guard.permits()&&!p7_guard_.configured())throw std::runtime_error("P6 refuses real or remapped command publisher BEFORE advertise");
+        }
+        if(p7_guard_.enabled&&!p7NoOtherPublisher())throw std::runtime_error("P7 command publisher is not exclusive or ROS master query failed");
         cmd_pub_ = nh_.advertise<geometry_msgs::Twist>(cmd_topic_, 10);
+        configureUnifiedControl();
+        if(p7_async_preview_enabled_){
+            if(!slqr_.supportsPreviewExchange())throw std::runtime_error("P7 staged SLQR horizon exceeds fixed exchange capacity");
+            p7_preview_.start([solver=slqr_](const SpatialSLQR::PreviewJob& job) mutable {
+                return solver.preparePreview(job);
+            });
+        }
 
         const double rate = std::max(1.0, control_rate_);
         timer_ = nh_.createTimer(ros::Duration(1.0 / rate), &VirtualTowingNode::controlTimer, this);
@@ -4016,6 +4187,7 @@ private:
         double reference_tracking_confidence = 1.0;
         double reference_refresh_latency = -1.0;
         double accepted_source_age = -1.0;
+        double geometry_progress_age = -1.0;
         double published_endpoint_age = -1.0;
         double tail_endpoint_age = -1.0;
         std::string reference_latency_source = "none";
@@ -4426,7 +4598,7 @@ private:
             return;
         }
         mkdir(debug_log_dir_.c_str(), 0775);
-        origin_run_id_=std::to_string(ros::WallTime::now().toNSec());
+        origin_run_id_=research_run_id_.empty() ? std::to_string(ros::WallTime::now().toNSec()) : research_run_id_;
         origin_control_log_.open(joinPath(debug_log_dir_,"origin_control_"+origin_run_id_+".csv").c_str());
         if(origin_control_log_)origin_control_log_<<
             "run_id,stamp,path_stamp,path_transport_yaw,pose_query_dt,reference_center,ey,body_heading_error,course_error,"
@@ -4590,6 +4762,7 @@ private:
     void referenceStatusCallback(const std_msgs::String::ConstPtr& msg) {
         const ros::Time now = ros::Time::now();
         const std::string rate_cap=parseStatusField(msg->data,"origin_rate_cap");
+        const std::string origin_mode=parseStatusField(msg->data,"origin_mode");
         const std::string geometry_stamp=parseStatusField(msg->data,"geometry_stamp");
         const std::string geometry_stamp_ns=parseStatusField(msg->data,"geometry_stamp_ns");
         reference_status_.origin_rate_cap=rate_cap.empty()?std::numeric_limits<double>::infinity():
@@ -4639,6 +4812,8 @@ private:
             parseStatusField(msg->data, "reference_refresh_latency");
         const std::string accepted_source_age =
             parseStatusField(msg->data, "accepted_source_age");
+        const std::string geometry_progress_age =
+            parseStatusField(msg->data, "geometry_progress_age");
         const std::string published_endpoint_age =
             parseStatusField(msg->data, "published_endpoint_age");
         const std::string tail_endpoint_age =
@@ -4727,6 +4902,8 @@ private:
             accepted_source_age.empty()
                 ? reference_status_.reference_refresh_latency
                 : std::atof(accepted_source_age.c_str());
+        reference_status_.geometry_progress_age =
+            geometry_progress_age.empty() ? -1. : std::atof(geometry_progress_age.c_str());
         reference_status_.published_endpoint_age =
             published_endpoint_age.empty() ? -1.0 : std::atof(published_endpoint_age.c_str());
         reference_status_.tail_endpoint_age =
@@ -4747,6 +4924,10 @@ private:
             reference_status_mode_since_.isZero() ? 0.0 : (now - reference_status_mode_since_).toSec();
         reference_status_.valid = true;
         ReferenceRateConstraint constraint;
+        constraint.prefix_only=origin_mode.size()>=7&&origin_mode.compare(origin_mode.size()-7,7,"_prefix")==0;
+        constraint.following_geometry=mode=="TRACK_GOOD"||mode=="TRACK_PROVISIONAL_STITCHED";
+        constraint.source_age=reference_status_.accepted_source_age;
+        constraint.progress_age=reference_status_.geometry_progress_age;
         if(!geometry_stamp_ns.empty()) {
             char* end=NULL;
             constraint.geometry_stamp_ns=std::strtoull(geometry_stamp_ns.c_str(),&end,10);
@@ -4859,13 +5040,29 @@ private:
 
     void carCallback(const move_car::car_parameter::ConstPtr& msg) {
         const ros::Time now = ros::Time::now();
-        updateSpeed(std::fabs(static_cast<double>(msg->back_wheel_speed)) * wheel_speed_scale_, now, true);
         const double steering = feedback_steer_sign_ * static_cast<double>(msg->turn_angle);
+        const int chassis_error=static_cast<int>(msg->error_flag);
+        if(p7_qualify_chassis_motion_&&p6_steering_sample_.discontinuousZeroBatteryMotion(
+            msg->battery_level,steering,now.toSec(),max_steer_rate_)) {
+            if(chassis_error!=0)vehicle_.chassis_error=chassis_error;
+            ROS_WARN_THROTTLE(2.,"P7 ignored inconsistent chassis motion report; last qualified receipt retained");
+            return;
+        }
+        p5_raw_state_.wheel.value=msg->back_wheel_speed;
+        if(p6_enabled_){++p6_can_receipt_sequence_;p6_can_receipt_steady_=p5SteadyNs();}
+        p5_raw_state_.wheel.receipt_stamp=now.toSec();p5_raw_state_.wheel.valid=std::isfinite(msg->back_wheel_speed);
+        p5_raw_state_.steering.value=feedback_steer_sign_*msg->turn_angle;
+        p5_raw_state_.steering.receipt_stamp=now.toSec();p5_raw_state_.steering.valid=std::isfinite(msg->turn_angle);
+        research_shadow_.wheel(msg->back_wheel_speed,msg->turn_angle,now.toSec());
+        updateSpeed(std::fabs(static_cast<double>(msg->back_wheel_speed)) * wheel_speed_scale_, now, true);
         updateSteering(steering, now);
-        vehicle_.chassis_error = static_cast<int>(msg->error_flag);
+        if(p6_qualified_steering_)p6_steering_sample_.update(steering,now.toSec(),max_steer_rate_);
+        vehicle_.chassis_error = chassis_error;
     }
 
     void carVelCallback(const geometry_msgs::Twist::ConstPtr& msg) {
+        // This smooth trial's carTop publishes the same feedback on both topics.
+        if(p7_qualify_chassis_motion_)return;
         const ros::Time now = ros::Time::now();
         updateSpeed(std::fabs(msg->linear.x) * carvel_speed_scale_, now, false);
         if (carvel_angular_is_steer_) {
@@ -4878,6 +5075,14 @@ private:
     }
 
     void imuCallback(const sensor_msgs::Imu::ConstPtr& msg) {
+        if(p6_enabled_){p6_last_imu_=*msg;p6_imu_receipt_=ros::Time::now();p6_imu_receipt_steady_=p5SteadyNs();++p6_imu_sequence_;}
+        p5_raw_state_.imu_yaw.value=msg->angular_velocity.z;
+        p5_raw_state_.imu_yaw.source_stamp=msg->header.stamp.toSec();
+        p5_raw_state_.imu_yaw.source_stamp_known=!msg->header.stamp.isZero();
+        p5_raw_state_.imu_yaw.receipt_stamp=ros::Time::now().toSec();
+        p5_raw_state_.imu_yaw.valid=std::isfinite(msg->angular_velocity.z)&&
+            msg->angular_velocity_covariance[0]>=0.&&!p5_imu_frame_.empty()&&msg->header.frame_id==p5_imu_frame_;
+        research_shadow_.imu(*msg,ros::Time::now().toSec());
         const ros::Time now = msg->header.stamp.isZero() ? ros::Time::now() : msg->header.stamp;
         cps_.updateImu(*msg, now);
         const double yaw_rate = msg->angular_velocity.z;
@@ -4894,6 +5099,7 @@ private:
     }
 
     void nedOdomCallback(const nav_msgs::Odometry::ConstPtr& msg) {
+        research_shadow_.ground(*msg,ros::Time::now().toSec());
         const ros::Time now = msg->header.stamp.isZero() ? ros::Time::now() : msg->header.stamp;
         const double vx = msg->twist.twist.linear.x;
         const double vy = msg->twist.twist.linear.y;
@@ -5022,16 +5228,18 @@ private:
         }
         const double dt = controlDt(now);
         const double target_speed = publish_zero_on_stop_ ? 0.0 : 0.0;
+        // P5: compute a proposal. Actual actuator/history state is committed
+        // exactly once only after the single ROS command publish returns.
+        ControlCmd proposed = filtered_cmd_;
+        p5_pending_accel_ = last_cmd_accel_;
         if (hard_stop_reason) {
-            filtered_cmd_.speed = 0.0;
-            last_cmd_accel_ = 0.0;
+            proposed.speed = 0.0;
+            p5_pending_accel_ = 0.0;
         } else {
-            filtered_cmd_.speed = approachWithLimit(filtered_cmd_.speed, target_speed, max_decel_ * dt);
+            proposed.speed = approachWithLimit(filtered_cmd_.speed, target_speed, max_decel_ * dt);
         }
-        filtered_cmd_.steering = approachWithLimit(filtered_cmd_.steering, 0.0, max_steer_rate_ * dt);
-        cps_.recordCommand(filtered_cmd_.steering, now);
-        recordSteeringCommand(filtered_cmd_.steering, now);
-        return filtered_cmd_;
+        proposed.steering = approachWithLimit(filtered_cmd_.steering, 0.0, max_steer_rate_ * dt);
+        return proposed;
     }
 
     double controlDt(const ros::Time& now) const {
@@ -6431,6 +6639,12 @@ private:
     }
 
     ControlCmd computeCommand(const ros::Time& now, ControllerDebug& debug) {
+        p5_reference_points_.clear();
+        p5_pending_accel_ = last_cmd_accel_;
+        research_shadow_.beginCycle();
+        research_solver_attempted_=false;
+        research_iterations_=0;
+        research_solve_ms_=std::numeric_limits<double>::quiet_NaN();
         advanceTrackingPose(now);
         active_path_stamp_=ros::Time();
         origin_solver_ok_=false;predicted_actual_delta_=predicted_progress_=
@@ -6488,8 +6702,16 @@ private:
             return safeStop(now,"path_pose_unavailable",debug);
         path_pose_query_dt_=path->pose_query_dt;
         path_transport_yaw_=wrapAngle(tracking_poses_.back().yaw-path->publication_pose.yaw);
+        if(research_shadow_.enabled()) {
+            PathBuffer analytic_path=*path;
+            if(research_shadow_.fillGeometry(path->stamp,analytic_path.points)) {
+                const auto transported=transportCenterPath(analytic_path,tracking_poses_.back());
+                research_shadow_.setGeometry(transported.points);
+            }
+        }
         PathBuffer current_path=transportCenterPath(*path,tracking_poses_.back());
         path=&current_path;
+        if(p5_mode_!="legacy_slqr")p5_reference_points_=current_path.points;
         debug.reference_braking_only=path->braking_reference;
         active_path_stamp_=path->stamp;
         debug.path_points = static_cast<int>(path->points.size());
@@ -7065,13 +7287,49 @@ private:
                                   filtered_yaw_rate_,
                                   vehicle_.steering_feedback);
         slqr_.setActuatorState(predicted_actual_delta_,controlDt(now));
-        double delta_base = 0.0;
-        if (slqr_preview_active) {
+        // A supervised terminal hold or revoked lease has no motion
+        // authority. Keep all safety and re-acquisition computations and
+        // skip only the discarded Riccati proposal at confirmed standstill.
+        const auto& wheel=p5_raw_state_.wheel;
+        const bool p7_stationary_preview_bypass=p7_terminal_handoff_enabled_&&
+            p6_mode_=="flat_nmpc_slqr"&&p5_ledger_.valid()&&std::abs(filtered_cmd_.speed)<=1e-7&&
+            wheel.valid&&wheel.receipt_stamp>0.&&wheel.receipt_stamp<=now.toSec()&&
+            now.toSec()-wheel.receipt_stamp<=0.12&&std::abs(wheel.value*wheel_speed_scale_)<=0.015&&
+            (p7_terminal_handoff_.latched()||!p7_guard_.armed(p5SteadyNs()*1e-9));
+        double delta_base = p7_stationary_preview_bypass ? previous_delta : 0.0;
+        const bool staged_preview=p7_async_preview_enabled_&&p6_mode_=="flat_nmpc_slqr";
+        if (staged_preview&&slqr_preview_active&&
+            (!p7_stationary_preview_bypass||!p7_terminal_handoff_.latched())) {
+            const unified_control::PreviewContext context{unified_control::PreviewContext::Clock::now(),
+                p5_epoch_,p5_config_revision_,p5_ledger_.lastSequence(),
+                active_path_stamp_.toNSec(),debug.using_raw_fallback};
+            const auto job=slqr_.previewJob(context,delayed_e_y,delayed_e_theta,previous_delta,steering_curvatures);
+            SpatialSLQR::PreviewResult prepared;
+            p7_preview_.tryExchange(job,prepared);
+            if(!p7_stationary_preview_bypass){
+                const bool current=p5_ledger_.valid()&&unified_control::previewCanRoll(
+                    prepared.context,context,1./std::max(1.,control_rate_));
+                slqr_info.solver_ok=current&&slqr_.replayPreview(job,prepared,slqr_info);
+                slqr_info.used_fallback=!slqr_info.solver_ok;
+                delta_base=slqr_info.solver_ok?slqr_info.delta:previous_delta;
+                debug.p7_preview_status=slqr_info.solver_ok?"p7_preview_replayed":
+                    (current?"p7_preview_replay_rejected":"p7_preview_missing_or_stale");
+            }
+            slqr_.setAdaptScale(1.0);
+        } else if (slqr_preview_active&&!p7_stationary_preview_bypass) {
+            const auto research_start=research_enabled_ ? std::chrono::steady_clock::now() :
+                std::chrono::steady_clock::time_point();
             delta_base = slqr_.solve(delayed_e_y, delayed_e_theta, steering_curvatures, previous_delta, slqr_info);
+            if(research_enabled_) {
+                research_solver_attempted_=true;
+                research_iterations_=slqr_info.iterations;
+                research_solve_ms_=std::chrono::duration<double,std::milli>(
+                    std::chrono::steady_clock::now()-research_start).count();
+            }
             slqr_.setAdaptScale(1.0);
         } else {
             slqr_.setAdaptScale(1.0);
-            slqr_info.delta = 0.0;
+            slqr_info.delta = delta_base;
             slqr_info.cost = 0.0;
             slqr_info.barrier_margin = 1.0;
             slqr_info.used_fallback = false;
@@ -7080,7 +7338,7 @@ private:
             slqr_info.envelope_slack = 0.0;
             slqr_info.soft_constraint_active = false;
         }
-        origin_solver_ok_=slqr_preview_active && slqr_info.solver_ok;
+        origin_solver_ok_=slqr_preview_active&&!p7_stationary_preview_bypass&&slqr_info.solver_ok;
         const double slqr_profile_feedforward =
             steering_curvatures.empty()
                 ? 0.0
@@ -7448,6 +7706,15 @@ private:
         debug.geometry_rate_stamp_ns=rate.geometry_stamp_ns;
         debug.geometry_rate_cap=rate.speed_cap;
         debug.geometry_rate_age=rate.geometry_stamp_ns?(now-rate.received).toSec():-1.0;
+        debug.p7_verified_prefix=p7_live_handoff_&&p6_separated_speed_target_&&
+            debug.geometry_rate_matched&&rate.prefix_only&&rate.following_geometry&&rate.speed_cap>0.&&
+            rate.source_age>=0.&&rate.source_age+debug.geometry_rate_age<=reference_soft_timeout_&&
+            debug.reference_geometry_valid&&!debug.bad_reference_guard_active;
+        if(debug.p7_verified_prefix&&rate.progress_age>=0.&&
+           rate.progress_age+debug.geometry_rate_age<=reference_soft_timeout_)
+            // Use the geometry publication clock. Receipt jitter cannot
+            // turn a repeated source endpoint into post-brake progress.
+            debug.p7_prefix_progress_stamp=path->stamp.toSec()-rate.progress_age;
         debug.speed_before_geometry_rate=planned_speed;
         const double rate_limited_speed=rate.limitSpeed(planned_speed,path->stamp,now,reference_hard_timeout_);
         if(rate_limited_speed<planned_speed) {
@@ -7540,10 +7807,23 @@ private:
         debug.commanded_v_ref = planned_speed;
         debug.sqp_preview_min_v = debug.preview_min_v;
         debug.final_speed_cap = planned_speed;
+        double filter_target=planned_speed;
+        if(p7_live_handoff_&&p6_separated_speed_target_&&debug.geometry_rate_matched&&rate.prefix_only&&
+           debug.reference_usable&&!debug.reference_stale&&!path->braking_reference&&
+           !follow_decision.hard_stop) {
+            const auto& model=p6_control_config_.profiles[0].solver.model;
+            research_control::Limits limits;
+            limits.speed=max_speed_;limits.steering=max_steer_;limits.steering_rate=max_steer_rate_;
+            limits.acceleration=max_accel_;limits.deceleration=max_decel_;limits.jerk=max_jerk_;
+            const double prefix_target=unified_control::TerminalHandoff::prefixPreviewTarget(rate_limited_speed,
+                debug.usable_arc_remaining,debug.dynamic_horizon_reserve,model.speed_delay+model.speed_tau,limits);
+            filter_target=std::min(planned_speed,prefix_target);
+            if(prefix_target<rate_limited_speed)debug.p7_prefix_preview_target=prefix_target;
+        }
         const double speed_before_filter = filtered_cmd_.speed;
         const double previous_cmd_accel = last_cmd_accel_;
         const double desired_accel=longitudinalAccelerationRequest(
-            planned_speed,speed_before_filter,max_accel_,max_decel_);
+            filter_target,speed_before_filter,max_accel_,max_decel_);
         debug.acceleration_request=desired_accel;
         double jerk_limited_accel =
             approachWithLimit(previous_cmd_accel,
@@ -7587,25 +7867,24 @@ private:
         // The acceleration limiter is the sole longitudinal command filter.
         // A second alpha filter delayed both curve entry and catch-up release and
         // made an otherwise continuous target look like stop-and-go motion.
-        filtered_cmd_.speed = speed_limited;
+        ControlCmd proposed;
+        proposed.speed = speed_limited;
         if (follow_decision.hard_stop) {
-            filtered_cmd_.speed = 0.0;
+            proposed.speed = 0.0;
         }
         debug.speed_filter_limited = false;
-        debug.speed_target_filtered = filtered_cmd_.speed;
-        debug.speed_target_limited = filtered_cmd_.speed;
-        debug.cmd_accel = (filtered_cmd_.speed - speed_before_filter) / std::max(1e-3, dt);
+        debug.speed_target_filtered = proposed.speed;
+        debug.speed_target_limited = proposed.speed;
+        debug.cmd_accel = (proposed.speed - speed_before_filter) / std::max(1e-3, dt);
         debug.cmd_jerk = (debug.cmd_accel - previous_cmd_accel) / std::max(1e-3, dt);
-        last_cmd_accel_ = debug.cmd_accel;
+        p5_pending_accel_ = debug.cmd_accel;
         // Steering rate is the single actuator-facing transition constraint.
         // Applying another alpha filter after it added about 0.13 s of software
         // delay on top of the measured 0.57 s chassis response delay.
-        filtered_cmd_.steering = steer_limited;
-        filtered_cmd_.speed = clampValue(filtered_cmd_.speed, 0.0, max_speed_);
-        filtered_cmd_.steering = clampValue(filtered_cmd_.steering, -max_steer_, max_steer_);
+        proposed.steering = steer_limited;
+        proposed.speed = clampValue(proposed.speed, 0.0, max_speed_);
+        proposed.steering = clampValue(proposed.steering, -max_steer_, max_steer_);
 
-        cps_.recordCommand(filtered_cmd_.steering, now);
-        recordSteeringCommand(filtered_cmd_.steering, now);
         last_slqr_delta_ = delta_base;
         debug.gamma_cps = gamma;
         debug.steering_residual = residual;
@@ -7631,7 +7910,7 @@ private:
         debug.yaw_rate_penalty =
             std::fabs(tracking_signal.yaw_rate_error) / std::max(1e-3, yaw_rate_slow_gate_);
         debug.delta_comp = 0.0; // Diagnostic-only legacy compensation is not applied.
-        debug.delta_cmd = filtered_cmd_.steering;
+        debug.delta_cmd = proposed.steering;
         debug.steer_feedback_for_control = vehicle_.steering_feedback;
         debug.yaw_rate = filtered_yaw_rate_;
         debug.yaw_damping_delta = 0.0;
@@ -7639,7 +7918,7 @@ private:
         debug.comp_clipped =
             std::fabs(cps_comp - cps_comp_limited) > 1e-6 ||
             std::fabs(delta_rate_ff - delay_comp_limited) > 1e-6;
-        debug.steer_sign_mismatch = updateSteerSignDiagnostic(filtered_cmd_.steering, now);
+        // Sign diagnostic consumes the finally published record in controlTimer.
         if (debug.bias_learning_active && std::fabs(debug.delta_bias) > 0.005) {
             debug.stop_reason = "tracking_bias_learning";
         } else if (tracking_signal.curve_blend > 0.20) {
@@ -7659,7 +7938,7 @@ private:
                      debug.preview_min_v,
                      debug.commanded_v_ref,
                      debug.curve_distance);
-        return filtered_cmd_;
+        return proposed;
     }
 
     int predictDelayCompensatedState(const ros::Time& now,
@@ -8137,12 +8416,521 @@ private:
         last_debug_flush_stamp_ = now;
     }
 
-    void controlTimer(const ros::TimerEvent&) {
+    static uint64_t p5SteadyNs() {
+        return static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now().time_since_epoch()).count());
+    }
+
+    static uint64_t p5ThreadCpuNs() {
+        timespec t{};
+        if(clock_gettime(CLOCK_THREAD_CPUTIME_ID,&t)!=0)return 0;
+        return static_cast<uint64_t>(t.tv_sec)*1000000000ULL+static_cast<uint64_t>(t.tv_nsec);
+    }
+
+    bool p7NoOtherPublisher() const {
+        XmlRpc::XmlRpcValue args,response,payload;args.setSize(1);args[0]=ros::this_node::getName();
+        if(!ros::master::execute("getSystemState",args,response,payload,false)||payload.getType()!=XmlRpc::XmlRpcValue::TypeArray||payload.size()!=3)return false;
+        auto&publishers=payload[0];if(publishers.getType()!=XmlRpc::XmlRpcValue::TypeArray)return false;
+        for(int i=0;i<publishers.size();++i){auto&entry=publishers[i];if(entry.getType()!=XmlRpc::XmlRpcValue::TypeArray||entry.size()!=2)return false;
+            if(static_cast<std::string>(entry[0])!=p7_guard_.command_topic)continue;
+            for(int j=0;j<entry[1].size();++j)if(static_cast<std::string>(entry[1][j])!=ros::this_node::getName())return false;
+        }return true;
+    }
+    void configureP7Guard(){
+        p7_guard_.enabled=pnh_.param("p7_supervised_test",false);if(!p7_guard_.enabled)return;
+        p7_qualify_chassis_motion_=pnh_.param("p7_qualify_chassis_motion",false);
+        if(p7_qualify_chassis_motion_&&!pnh_.param("p6_qualified_steering",false))
+            throw std::runtime_error("P7 chassis motion qualification requires qualified steering");
+        p7_reference_revalidation_=pnh_.param("p7_reference_revalidation",false);
+        p7_retime_command_increments_=pnh_.param("p7_retime_command_increments",false);
+        p7_spatial_reference_continuity_=pnh_.param("p7_spatial_reference_continuity",false);
+        if(p7_retime_command_increments_&&!p7_reference_revalidation_)
+            throw std::runtime_error("P7 increment retiming requires reference revalidation");
+        if(p7_spatial_reference_continuity_&&!p7_reference_revalidation_)
+            throw std::runtime_error("P7 spatial continuity requires reference revalidation");
+        p6_speed_preview_=pnh_.param("p6_speed_preview",false);
+        p6_synchronized_preview_=p6_speed_preview_&&pnh_.param("p6_synchronized_preview",false);
+        p6_actuator_aligned_preview_=pnh_.param("p6_actuator_aligned_preview",false);
+        if(p6_actuator_aligned_preview_&&!p6_synchronized_preview_)
+            throw std::runtime_error("P6 actuator-aligned preview requires synchronized speed preview");
+        p6_terminal_approach_=p6_speed_preview_&&pnh_.param("p6_terminal_approach",false);
+        p7_terminal_handoff_enabled_=p6_terminal_approach_&&pnh_.param("p7_terminal_handoff",false);
+        p7_async_preview_enabled_=pnh_.param("p7_async_preview",false);
+        p7_live_handoff_=pnh_.param("p7_live_handoff",false);
+        p7_smooth_steering_handoff_=pnh_.param("p7_smooth_steering_handoff",false);
+        if(p7_smooth_steering_handoff_&&!p7_live_handoff_)
+            throw std::runtime_error("P7 steering handoff requires the supervised live handoff");
+        if(p7_async_preview_enabled_&&!p7_terminal_handoff_enabled_)
+            throw std::runtime_error("P7 staged preview requires the terminal handoff");
+        if(p7_live_handoff_&&(!p7_async_preview_enabled_||std::abs(control_rate_-40.)>1e-9||
+                             !pnh_.param("p7_candidate_control_trial",false)))
+            throw std::runtime_error("P7 live handoff requires 40 Hz reserve, staged preview and an explicit candidate trial");
+        p7_guard_.mapping_confirmed=pnh_.param("p7_mapping_confirmed",false);
+        p7_guard_.command_topic=nh_.resolveName(cmd_topic_);p7_guard_.run_id=pnh_.param<std::string>("p7_run_id","");
+        p7_guard_.operator_id=pnh_.param<std::string>("p7_operator_id","");p7_guard_.mapping_evidence=pnh_.param<std::string>("p7_mapping_evidence","");
+        p7_guard_.imu_frame=pnh_.param<std::string>("p7_imu_frame","");p7_guard_.terrain=pnh_.param<std::string>("p5_terrain","unknown");
+        p7_guard_.synthetic=pnh_.param("p6_synthetic_observation_contract",false);
+        p7_guard_.speed_cap=pnh_.param("p7_speed_cap",0.);p7_guard_.degraded_speed_limit=degraded_speed_limit_;
+        p7_guard_.wheel_scale=wheel_speed_scale_;p7_guard_.steering_sign=feedback_steer_sign_;p7_guard_.imu_yaw_sign=1.;
+        if(!p7_guard_.configured()||p7_guard_.run_id!=research_run_id_||!pnh_.param("p6_enabled",false)||
+           pnh_.param("p5_enable_adaptation",false)||pnh_.param("enable_p6_adaptation",false))throw std::runtime_error("P7 incomplete engineering mapping/run/degraded speed/nominal model contract");
+        const auto mode=pnh_.param<std::string>("p6_algorithm_mode","legacy_slqr"),shadow=pnh_.param<std::string>("p6_shadow_algorithm","nmpc_12_fixed");
+        if(!unified_control::p7FixedMode(mode)||!unified_control::p7FixedMode(shadow))throw std::runtime_error("P7 first collection only supports fixed nominal models; unverified adaptation not accepted");
+        ROS_WARN("P7 supervised research test: maximum speed %.3f m/s, operator lease mandatory; physical calibration/execution NOT certified",p7_guard_.speed_cap);
+    }
+    void p7LeaseCallback(const ros::MessageEvent<std_msgs::String const>&event){
+        const auto m=event.getConstMessage();const auto header=event.getConnectionHeaderPtr();
+        bool latched=true;if(header){const auto it=header->find("latching");latched=it!=header->end()&&it->second!="0";}
+        if(!m||!p7_guard_.acceptLease(m->data,p5SteadyNs()*1e-9,latched))++p7_rejected_leases_;
+    }
+    void configureUnifiedControl() {
+        p5_mode_=pnh_.param<std::string>("p5_mode","legacy_slqr");
+        p5_diagnostics_enabled_=pnh_.param("p5_diagnostics_enabled",false);
+        p5_guard_.isolated_test=pnh_.param("p5_isolated_test",false);
+        p5_guard_.allow_test_nmpc=pnh_.param("p5_allow_test_nmpc",false);
+        p5_guard_.command_topic=cmd_pub_.getTopic();p5_guard_.run_id=research_run_id_;
+        p5_nominal_contract_=pnh_.param("p5_nominal_state_contract",false)||p7_guard_.configured();
+        p5_imu_frame_=p7_guard_.enabled?p7_guard_.imu_frame:pnh_.param<std::string>("p5_imu_frame","");
+        p5_config_hash_=pnh_.param<std::string>("p5_config_hash","");
+        p5_terrain_=pnh_.param<std::string>("p5_terrain","unknown");
+        if(p5_terrain_!="smooth"&&p5_terrain_!="grass_bumpy"&&p5_terrain_!="asphalt")p5_terrain_="unknown";
+        p5_speed_tau_=pnh_.param("p5_speed_tau",.20);
+        p5_lateral_limit_=pnh_.param("p5_max_lateral_acceleration",.35);
+        p5_adaptive_gate_=pnh_.param("p5_enable_adaptation",false)&&p5_guard_.permits();
+        p6_enabled_=pnh_.param("p6_enabled",false);
+        p6_qualified_steering_=p6_enabled_&&pnh_.param("p6_qualified_steering",false);
+        p6_separated_speed_target_=p6_enabled_&&pnh_.param("p6_separated_speed_target",false);
+        if(p6_enabled_&&!p5_guard_.permits()&&!p7_guard_.configured())throw std::runtime_error("P6 controller requires isolated P5 test authority; real sink forbidden");
+        if(p6_enabled_){
+            p6_session_=pnh_.param<std::string>("p6_session_id",research_run_id_+"_session");
+            p6_mode_=pnh_.param<std::string>("p6_algorithm_mode","legacy_slqr");
+            p6_shadow_mode_=pnh_.param<std::string>("p6_shadow_algorithm","nmpc_12_fixed");
+            p6_synthetic_=pnh_.param("p6_synthetic_observation_contract",false);
+            if(p6_session_.empty()||!research_control::p6KnownMode(p6_mode_)||!research_control::p6KnownMode(p6_shadow_mode_))throw std::runtime_error("invalid P6 session/mode");
+            p5_mode_=p6LegacyMode(p6_mode_);
+            p6_control_config_=research_control::loadP6Runtime(pnh_,p6_control_scenes_);
+            if(p6_control_config_.config_hash!=p5_config_hash_)throw std::runtime_error("P6 controller/worker config identity mismatch");
+        }
+        p5_ledger_=unified_control::CommandLedger(p5_epoch_,.12);
+        p5_pub_=nh_.advertise<move_car::P5PublishedCommand>("/control_research/p5/published",32);
+        p5_diagnostics_pub_=nh_.advertise<move_car::P5ControlDiagnostics>("/control_research/p5/diagnostics",4);
+        p5_request_pub_=nh_.advertise<move_car::P5ControlRequest>("/control_research/p5/request",1);
+        if(!p6_enabled_)p5_candidate_sub_=nh_.subscribe("/control_research/p5/candidate",1,&VirtualTowingNode::p5CandidateCallback,this);
+        else{
+            const std::string request=nh_.resolveName("/control_research/p5_test/p6/request"),candidate=nh_.resolveName("/control_research/p5_test/p6/candidate");
+            for(const auto&topic:{request,candidate})if(topic.compare(0,29,"/control_research/p5_test/p6/")!=0)throw std::runtime_error("P6 remap outside isolated research namespace");
+            p6_request_pub_=nh_.advertise<move_car::P6ControlRequest>(request,1);
+            p6_candidate_sub_=nh_.subscribe(candidate,1,&VirtualTowingNode::p6CandidateCallback,this,ros::TransportHints().tcpNoDelay());
+            p6_terrain_sub_=nh_.subscribe("/control_research/p5_test/p6/terrain",1,&VirtualTowingNode::p6TerrainCallback,this);
+        }
+        if(p7_guard_.enabled){
+            if(p6_synthetic_||p6_control_scenes_.enabled)throw std::runtime_error("P7 synthetic observations or dynamic scene transitions forbidden");
+            p7_lease_sub_=nh_.subscribe("/control_research/p7/operator_lease",1,&VirtualTowingNode::p7LeaseCallback,this,ros::TransportHints().tcpNoDelay());
+        }
+        p5_mode_sub_=nh_.subscribe("/control_research/p5/mode",1,&VirtualTowingNode::p5ModeCallback,this);
+        p5_fault_sub_=nh_.subscribe("/control_research/p5/fault",1,&VirtualTowingNode::p5FaultCallback,this);
+        if(p5_mode_!="legacy_slqr"&&p5_mode_!="nmpc_shadow"&&!p5_guard_.permits()&&!p7_guard_.configured())
+            ROS_ERROR("P5 NMPC actuation denied: only isolated p5_ run with test command sink may select NMPC; S8 fallback retained");
+    }
+
+    void p5ModeCallback(const std_msgs::String::ConstPtr& m) {
+        const std::string& mode=m->data;
+        if(p7_guard_.enabled)return; // Fixed mode per run; never change real authority by topic.
+        if(p6_enabled_){if(research_control::p6KnownMode(mode)&&mode!=p6_mode_){p6_mode_=mode;p5_mode_=p6LegacyMode(mode);++p5_config_revision_;}return;}
+        if(mode!="legacy_slqr"&&mode!="nmpc_shadow"&&mode!="nmpc_fixed"&&
+           mode!="nmpc_adaptive"&&mode!="auto_fallback")return;
+        p5_mode_=mode;
+    }
+    void p5FaultCallback(const std_msgs::String::ConstPtr& m) {
+        if(p5_guard_.permits())p5_fault_=m->data;
+    }
+    void p5CandidateCallback(const move_car::P5ControlCandidate::ConstPtr& m) {
+        if(p6_enabled_)return;
+        p5AcceptCandidate(m);
+    }
+    static std::string p6LegacyMode(const std::string&mode){
+        if(mode=="legacy_slqr"||mode=="nmpc_shadow")return mode;
+        if(mode=="research_auto_fallback")return "auto_fallback";
+        return research_control::p6ResidualMode(mode)?"nmpc_adaptive":"nmpc_fixed";
+    }
+    void p6TerrainCallback(const std_msgs::String::ConstPtr&m){
+        if(p6_enabled_&&p5_guard_.permits()&&m->data!=p5_terrain_&&(m->data=="smooth"||m->data=="grass_bumpy"||m->data=="asphalt"||m->data=="unknown")){p5_terrain_=m->data;++p5_config_revision_;}
+    }
+    void p6CandidateCallback(const move_car::P6ControlCandidate::ConstPtr&m){
+        if(!p6_enabled_||(!p5_guard_.permits()&&!p7_guard_.configured())||m->session_id!=p6_session_||m->algorithm_mode!=p6_mode_||m->computation_mode!=(p6_mode_=="nmpc_shadow"?p6_shadow_mode_:p6_mode_)||!research_control::p6SnapshotShape(*m)){
+            ++p5_rejected_candidates_;return;
+        }
+        if(p7_reference_revalidation_)p7_candidate_message_=m;
+        move_car::P5ControlCandidate::Ptr base(new move_car::P5ControlCandidate(m->base));p5AcceptCandidate(base);
+    }
+    void p5AcceptCandidate(const move_car::P5ControlCandidate::ConstPtr& m) {
+        if(m->mode!=p5_mode_||m->schema_version!=1||m->run_id!=research_run_id_||m->config_hash!=p5_config_hash_||
+           m->predicted_states.size()>6*(research_control::kMaxHorizon+1)||
+           m->predicted_commands.size()>2*research_control::kMaxHorizon) {++p5_rejected_candidates_;return;}
+        unified_control::ControlCandidate c;
+        c.command={m->speed,m->steering};c.command_acceleration=m->acceleration;
+        c.solve_ms=std::max(m->solve_ms,m->worker_ms);c.max_violation=m->max_violation;
+        c.created_stamp=m->header.stamp.toSec();c.snapshot_stamp=m->snapshot_stamp.toSec();
+        c.expected_apply_stamp=m->expected_apply_stamp.toSec();
+        c.propagated_speed=m->propagated_speed;c.propagated_steering=m->propagated_steering;
+        c.propagated_yaw_rate=m->propagated_yaw_rate;c.sequence=m->cycle;
+        c.epoch=m->epoch;c.reference_sequence=m->reference_revision;c.config_version=m->config_revision;
+        c.history_base_sequence=m->previous_sequence;c.valid=m->valid&&m->state_valid&&m->history_valid&&m->reference_valid;
+        c.feasible=m->feasible;c.timed_out=m->timed_out;c.numerical_failure=m->numerical_failure;
+        c.complete_substep_constraints=m->complete_substep_constraints;c.state_pair_validated=m->state_pair_validated;
+        c.model_adaptation_active=m->model_adaptation_active;c.weight_adaptation_active=m->weight_adaptation_active;
+        const auto* previous=p5_ledger_.latest();
+        if(!previous||std::fabs(previous->command.speed-m->actual_previous_speed)>1e-9||
+           std::fabs(previous->command.steering-m->actual_previous_steering)>1e-9||
+           std::fabs(previous->acceleration-m->actual_previous_acceleration)>1e-9)c.valid=false;
+        for(double v:m->predicted_states)if(!std::isfinite(v))c.valid=false;
+        for(double v:m->predicted_commands)if(!std::isfinite(v))c.valid=false;
+        if(!p5_mailbox_.tryPublish(c))++p5_rejected_candidates_;
+    }
+
+    unified_control::LocalInitializationResult p5LocalState(const ros::Time& now,bool reference_valid) {
+        auto in=p5_raw_state_;in.now=now.toSec();in.reference_local_frame_verified=reference_valid;
+        if(p6_qualified_steering_){
+            // Keep p5_raw_state_ and the P6 raw wrapper untouched. This state
+            // estimate uses an accepted raw sample, never a restamped pulse or
+            // S8's extra low-pass-filtered steering value.
+            in.steering.value=p6_steering_sample_.accepted;
+            in.steering.receipt_stamp=p6_steering_sample_.accepted_stamp;
+            in.steering.valid=p6_steering_sample_.usable(in.now);
+        }
+        unified_control::LocalInitializationContract c;
+        c.wheel_scale=wheel_speed_scale_;c.steering_scale=1.;c.imu_yaw_sign=1.;
+        c.wheel_units_verified=c.steering_units_verified=p5_nominal_contract_;
+        c.imu_body_frame_verified=p5_nominal_contract_&&!p5_imu_frame_.empty();
+        auto state=unified_control::LocalStateInitializer::initialize(in,c);
+        state.state.x=-.5*wheelbase_;
+        if(p7_guard_.enabled&&state.state.speed<0.){state.state.valid=false;state.reason="negative_wheel_speed_forward_model_invalid";}
+        // Model derivative, not an accelerometer measurement. No independent
+        // speed/slip/physical calibration is manufactured by this local gauge.
+        if(state.state.valid&&std::isfinite(p5_speed_tau_)&&p5_speed_tau_>.01)
+            state.state.acceleration=(filtered_cmd_.speed-state.state.speed)/p5_speed_tau_;
+        else state.state.valid=false;
+        return state;
+    }
+
+    unified_control::ControlRequest p5ArbitrationRequest(const ros::Time& now,const ControlCmd& legacy,
+                                                       const ControllerDebug& debug) {
+        unified_control::ControlRequest r;r.now=now.toSec();r.dt=controlDt(now);
+        r.mode=unified_control::parseMode(p5_mode_);r.guard=p5_guard_;r.supervised=p7_guard_;r.steady_now=p5SteadyNs()*1e-9;
+        r.legacy={legacy.speed,legacy.steering};r.previous={filtered_cmd_.speed,filtered_cmd_.steering};
+        r.previous_acceleration=last_cmd_accel_;r.epoch=p5_epoch_;r.config_version=p5_config_revision_;
+        if(p5_ledger_.latest())r.previous_acceleration=p5_ledger_.latest()->acceleration;
+        r.history_sequence=p5_ledger_.lastSequence();r.history_valid=p5_ledger_.valid();
+        r.reference.stamp=active_path_stamp_.toSec();r.reference.sequence=active_path_stamp_.toNSec();
+        r.reference.valid=debug.path_valid&&debug.reference_usable&&!debug.safe_stop;
+        r.reference.braking=debug.reference_braking_only;
+        r.state=p5LocalState(now,r.reference.valid).state;
+        r.limits.speed=max_speed_;r.limits.steering=max_steer_;r.limits.steering_rate=max_steer_rate_;
+        r.limits.acceleration=max_accel_;r.limits.deceleration=max_decel_;r.limits.jerk=max_jerk_;
+        r.limits.lateral_acceleration=p5_lateral_limit_;
+        r.speed_cap=std::max(0.,std::min(max_speed_,debug.final_speed_cap));
+        r.safety_stop=vehicle_.chassis_error!=0||debug.collision_stop_active||debug.emergency_stop||
+            debug.hard_stop_reason=="hard_target_gap"||debug.hard_stop_reason=="hard_follow_gap";
+        r.following_stop=debug.distance_hard_stop_active;
+        r.adaptive_gate_enabled=p5_adaptive_gate_;
+        if(p6_enabled_&&p6_mode_!="legacy_slqr"&&p6_mode_!="nmpc_shadow"&&!r.safety_stop&&!r.following_stop&&!debug.safe_stop&&!r.reference.braking){
+            const auto profile=p6_control_scenes_.update(p6_control_config_,p5_terrain_,now.toSec());
+            r.legacy=research_control::p6ConservativeSpeedFallback(r.legacy,r.previous,r.previous_acceleration,r.dt,profile.speed_cap,r.limits);
+            r.speed_cap=std::min(r.speed_cap,std::max(profile.speed_cap,std::max(r.previous.speed,r.legacy.speed)));
+        }
+        if(p7_guard_.enabled){
+            r.limits.speed=std::min(r.limits.speed,p7_guard_.speed_cap);r.speed_cap=std::min(r.speed_cap,p7_guard_.speed_cap);
+            r.legacy.speed=p7_guard_.boundedSpeed(r.legacy.speed);
+            if(!p7_guard_.armed(r.steady_now)){r.safety_stop=true;r.legacy.speed=0.;}
+        }
+        if(p6_separated_speed_target_){
+            const auto profile=p6_control_scenes_.update(p6_control_config_,p5_terrain_,now.toSec());
+            const auto policy=research_control::P7SpeedPolicy::make(true,debug.final_speed_cap,
+                r.limits.speed,profile.speed_cap,debug.speed_cap_follow,debug.speed_cap_horizon,
+                debug.speed_cap_curve,debug.speed_cap_cte,debug.speed_cap_actuator,debug.geometry_rate_matched,debug.geometry_rate_cap,debug.speed_cap_final_reason,
+                r.safety_stop||r.following_stop||debug.safe_stop,r.reference.valid,
+                r.reference.braking,debug.bad_reference_guard_active||debug.reference_held||debug.reference_stale||
+                debug.reference_trackable_mode=="geometry_degraded",p7_live_handoff_&&r.state.valid&&
+                debug.reference_status_mode=="TRACK_GOOD"&&debug.reference_status_age>=0.&&
+                debug.reference_status_age<=reference_soft_timeout_);
+            r.speed_target_separated=policy.separated;r.target_speed=policy.target;
+            if(policy.separated)r.speed_cap=policy.hard_cap;
+        }
+        if(debug.p7_prefix_preview_target>=0.&&!r.safety_stop&&!r.following_stop&&
+           r.reference.valid&&!r.reference.braking){
+            // If the existing policy independently admitted the physical
+            // caps, a preview failure's S8-only target need not replace an
+            // executable prefix target for NMPC. S8 keeps its conservative
+            // target, and NMPC must still pass the complete rollout.
+            const bool legacy_preview_only=r.speed_target_separated&&
+                debug.speed_cap_final_reason=="slqr_sequence_fallback";
+            const double target_ceiling=r.speed_target_separated&&!legacy_preview_only?
+                r.target_speed:r.speed_cap;
+            r.target_speed=std::min(debug.p7_prefix_preview_target,target_ceiling);
+            r.speed_target_separated=true;
+        }
+        return r;
+    }
+
+    std::string p7RevalidateCandidate(const unified_control::ControlRequest&r,
+                                    unified_control::ControlCandidate&candidate){
+        if(!p7_reference_revalidation_||!p7_guard_.enabled||p6_mode_=="legacy_slqr"||p6_mode_=="nmpc_shadow")return "";
+        if(!candidate.valid||!candidate.feasible){
+            // Keep the worker's actual failure visible even when the arbiter
+            // also rejects an old reference revision. No eligibility check or
+            // command changes: this is diagnostic attribution only.
+            const auto message=p7_candidate_message_;
+            return "revalidation_skipped_original_candidate_invalid"+
+                (message&&message->base.cycle==candidate.sequence?
+                 ";worker_rejection="+message->base.reason:std::string(";worker_rejection=unavailable"));
+        }
+        if(!r.state.valid||!r.state.causal||!r.reference.valid||r.reference.braking||r.safety_stop||r.following_stop)
+            return "revalidation_skipped_current_state_or_safety_invalid";
+        candidate.valid=false; // Only a completed nonlinear validation restores eligibility.
+        if(!p7_candidate_message_||!p7_request_message_||tracking_poses_.empty())return "revalidation_context_missing";
+        const auto&m=*p7_candidate_message_;const auto&q=p7_request_message_->base;
+        if(m.base.cycle!=candidate.sequence||q.cycle!=candidate.sequence||q.epoch!=r.epoch||
+           q.config_revision!=r.config_version||q.previous_sequence!=r.history_sequence||
+           m.base.previous_sequence!=r.history_sequence||m.base.reference_revision!=q.reference_revision||
+           m.base.config_revision!=q.config_revision||m.base.config_hash!=p5_config_hash_||
+           q.reference_stamp.toNSec()!=q.reference_revision||!research_control::p6SnapshotShape(m))
+            return "revalidation_original_context_mismatch";
+        if(q.state_observation_stamp!=p7_request_pose_.stamp||r.now<p7_request_pose_.stamp.toSec()||
+           r.now-p7_request_pose_.stamp.toSec()>r.maximum_candidate_age||tracking_poses_.back().stamp.toSec()!=r.now)
+            return "revalidation_local_frame_time_invalid";
+        if(candidate.model_adaptation_active||candidate.weight_adaptation_active)return "revalidation_adaptation_forbidden";
+        if(!std::isfinite(candidate.solve_ms)||candidate.solve_ms<0.||candidate.solve_ms>=r.maximum_solve_ms||
+           candidate.snapshot_stamp>r.now||r.now-candidate.snapshot_stamp>r.maximum_candidate_age)
+            return "revalidation_original_candidate_stale_or_over_budget";
+        const auto start=std::chrono::steady_clock::now();
+        const double allowance=std::min(.8,r.maximum_solve_ms-candidate.solve_ms);
+        const auto deadline=start+std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+            std::chrono::duration<double,std::milli>(allowance));
+        auto c=research_control::p6SolverFromSnapshot(m.parameters);
+        if(c.steps<2||c.steps>research_control::kMaxHorizon||m.base.predicted_commands.size()!=2u*c.steps)
+            return "revalidation_control_horizon_invalid";
+        c.limits=unified_control::intersectLimits(c.limits,r.limits);
+        research_control::SolveRequest fresh;fresh.now=r.now;fresh.control_dt=r.dt;
+        fresh.state={r.state.x,r.state.y,r.state.yaw,r.state.speed,r.state.steering,r.state.acceleration};
+        fresh.previous=r.previous;fresh.previous_command_acceleration=r.previous_acceleration;
+        fresh.speed_cap=std::min(r.speed_cap,m.parameters.speed_cap);
+        fresh.target_speed=r.speed_target_separated?r.target_speed:research_control::missing();
+        std::array<unified_control::PublishedCommandRecord,256> records{};
+        const auto count=p5_ledger_.copyHistory(records);fresh.history.reserve(count);
+        for(std::size_t i=0;i<count;++i)fresh.history.push_back({records[i].stamp,records[i].command});
+        std::array<research_control::Command,research_control::kMaxHorizon>commands{};
+        for(int i=0;i<c.steps;++i)commands[i]={m.base.predicted_commands[2*i],m.base.predicted_commands[2*i+1]};
+        auto& old_geometry=p7_previous_geometry_;
+        auto& new_geometry=p7_latest_geometry_;
+        old_geometry.clear();new_geometry.clear();
+        old_geometry.reserve(q.reference.size());new_geometry.reserve(p5_reference_points_.size());
+        const auto&current=tracking_poses_.back();
+        // Match transportCenterPath's sensor-to-center convention exactly.
+        const research_control::P7ReferenceRevalidation::FrameTransform transform(
+            {{p7_request_pose_.x,p7_request_pose_.y,p7_request_pose_.yaw}},
+            {{current.x,current.y,current.yaw}});
+        for(const auto&p:q.reference){research_control::ReferencePoint b;b.s=p.s;
+            b.x=p.x;b.y=p.y;b.yaw=p.tangent_yaw;b.curvature=p.curvature;
+            old_geometry.push_back(transform.apply(b));}
+        for(const auto&p:p5_reference_points_){research_control::ReferencePoint b;
+            b.s=p.s;b.x=p.x;b.y=p.y;b.yaw=p.yaw;b.curvature=p.curvature;new_geometry.push_back(b);}
+        // The worker derives curvature from geometry-only paths before selecting
+        // the local suffix. Use the same input to the speed preview here.
+        research_control::FlatnessReferenceModel::recoverMissingSpatialCurvature(old_geometry);
+        research_control::FlatnessReferenceModel::recoverMissingSpatialCurvature(new_geometry);
+        const auto checked=research_control::P7ReferenceRevalidation::validate(fresh,c,old_geometry,new_geometry,commands,deadline,
+            p6_speed_preview_,p6_synchronized_preview_,p6_terminal_approach_,p7_live_handoff_?q.control_dt:0.,
+            p6_actuator_aligned_preview_,p7_retime_command_increments_,p7_spatial_reference_continuity_,
+            &p7_revalidation_workspace_,p7_retime_command_increments_&&
+                fresh.speed_cap+1e-7<m.parameters.speed_cap);
+        const double elapsed=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-start).count();
+        if(elapsed>=allowance||candidate.solve_ms+elapsed>=r.maximum_solve_ms)return "revalidation_total_budget_exceeded";
+        if(!checked.valid)return "revalidation_rejected:"+checked.reason;
+        candidate.reference_revalidated=true;candidate.validated_reference_sequence=r.reference.sequence;
+        candidate.validation_stamp=r.now;candidate.revalidation_ms=elapsed;candidate.solve_ms+=elapsed;
+        candidate.command=checked.rollout.command;candidate.command_acceleration=checked.rollout.command_acceleration;
+        candidate.max_violation=checked.rollout.max_violation;candidate.propagated_speed=r.state.speed;
+        candidate.propagated_steering=r.state.steering;candidate.propagated_yaw_rate=r.state.yaw_rate;
+        candidate.valid=true;
+        return checked.reason+";optimized_reference="+std::to_string(candidate.reference_sequence)+
+            ";validated_reference="+std::to_string(candidate.validated_reference_sequence)+";revalidation_ms="+std::to_string(elapsed);
+    }
+
+    void p5PublishRequest(const ros::Time& cycle_stamp,const ControllerDebug& debug,
+                          const unified_control::PublishedCommandRecord& record,
+                          const unified_control::ControlRequest& frozen,bool terminal_hold) {
+        if(p5_mode_=="legacy_slqr")return;
+        move_car::P5ControlRequest q;q.header.stamp=ros::Time::now();q.header.frame_id="base_link";
+        q.schema_version=1;q.epoch=p5_epoch_;q.cycle=p5_cycle_;q.reference_revision=active_path_stamp_.toNSec();
+        q.config_revision=p5_config_revision_;q.run_id=research_run_id_;q.config_hash=p5_config_hash_;
+        q.mode=p5_mode_;q.terrain=p5_terrain_;
+        unified_control::LocalInitializationResult local;local.state=frozen.state;
+        local.reason="frozen_prepublication_nominal_state";
+        q.nominal_state_contract=p5_nominal_contract_;q.state_observation_stamp=cycle_stamp;q.reference_frame_stamp=cycle_stamp;
+        q.state_valid=local.state.valid;q.history_valid=p5_ledger_.valid();q.reference_valid=
+            debug.path_valid&&debug.reference_usable&&!debug.safe_stop&&p5_reference_points_.size()>=2;
+        q.hard_stop=debug.safe_stop||debug.collision_stop_active||debug.distance_hard_stop_active||(p7_guard_.enabled&&!p7_guard_.armed(p5SteadyNs()*1e-9));
+        q.reason=std::string(local.reason)+";acceleration_is_nominal_model_derivative";
+        if(terminal_hold) {
+            q.hard_stop=true;
+            q.reason+=";terminal_handoff_optimizer_suspended";
+        }
+        q.state[0]=local.state.x;q.state[1]=local.state.y;q.state[2]=local.state.yaw;
+        q.state[3]=local.state.speed;q.state[4]=local.state.steering;q.state[5]=local.state.acceleration;
+        q.yaw_rate=local.state.yaw_rate;q.yaw_rate_valid=local.state.valid;
+        q.state_confidence=local.state.confidence;
+        q.position_uncertainty=.05*local.state.maximum_source_age;
+        q.yaw_uncertainty=.02*local.state.maximum_source_age;
+        q.wheel_receipt_stamp.fromSec(p5_raw_state_.wheel.receipt_stamp);
+        q.steering_receipt_stamp.fromSec(p6_qualified_steering_?p6_steering_sample_.accepted_stamp:p5_raw_state_.steering.receipt_stamp);
+        q.imu_source_stamp.fromSec(p5_raw_state_.imu_yaw.source_stamp);
+        q.imu_receipt_stamp.fromSec(p5_raw_state_.imu_yaw.receipt_stamp);
+        // Nominal engineering support is explicitly distinct from physical
+        // calibration, hardware time and independent ground velocity.
+        q.source_time_verified=q.wheel_calibrated=q.steering_calibrated=q.imu_frame_verified=false;
+        q.state_history_sequence=frozen.history_sequence;
+        q.max_speed=frozen.limits.speed;q.max_steering=frozen.limits.steering;
+        q.max_steering_rate=frozen.limits.steering_rate;q.max_acceleration=frozen.limits.acceleration;
+        q.max_deceleration=frozen.limits.deceleration;q.max_jerk=frozen.limits.jerk;
+        q.max_lateral_acceleration=frozen.limits.lateral_acceleration;q.solve_budget_ms=frozen.maximum_solve_ms;
+        q.control_dt=p7_live_handoff_?1./control_rate_:p5_cycle_dt_;
+        q.speed_cap=p6_enabled_?frozen.speed_cap:std::max(0.,std::min(max_speed_,debug.final_speed_cap));
+        q.baseline_speed=record.command.speed;q.baseline_steering=record.command.steering;
+        if(p6_separated_speed_target_){
+            // Independent S8 candidate, never presented as executed history.
+            q.baseline_speed=frozen.legacy.speed;q.baseline_steering=frozen.legacy.steering;
+        }
+        q.previous_sequence=record.sequence;q.previous_publish_stamp.fromSec(record.stamp);
+        q.previous_speed=record.command.speed;q.previous_steering=record.command.steering;
+        q.previous_acceleration=record.acceleration;q.reference_stamp=active_path_stamp_;
+        q.reference_braking=debug.reference_braking_only;
+        q.reference.reserve(std::min<std::size_t>(p5_reference_points_.size(),1024));
+        if(p5_reference_points_.size()>1024)q.reference_valid=false;
+        else for(const auto& p:p5_reference_points_){move_car::ReferenceSample a;
+            a.s=p.s;a.x=p.x;a.y=p.y;a.tangent_yaw=p.yaw;a.curvature=p.curvature;
+            a.geometry_valid=std::isfinite(p.s)&&std::isfinite(p.x)&&std::isfinite(p.y)&&
+                std::isfinite(p.yaw)&&std::isfinite(p.curvature);q.reference.push_back(a);}
+        if(p5_guard_.permits()){
+            q.force_timeout=p5_fault_=="timeout";q.force_infeasible=p5_fault_=="infeasible";
+            q.force_numerical_failure=p5_fault_=="numerical_failure";
+        }
+        // Bounded ROS queue=1; optimization happens only in another process.
+        if(p6_enabled_){
+            move_car::P6ControlRequest wrapper;wrapper.schema_version=2;wrapper.base=q;wrapper.session_id=p6_session_;wrapper.algorithm_mode=p6_mode_;wrapper.synthetic=p6_synthetic_;
+            if(frozen.speed_target_separated){
+                wrapper.schema_version=3;wrapper.speed_target_separated=true;
+                wrapper.target_speed=frozen.target_speed;
+                wrapper.speed_policy_reason="performance_target_with_unchanged_safety_caps";
+            }
+            wrapper.computation_mode=p6_mode_=="nmpc_shadow"?p6_shadow_mode_:p6_mode_;
+            auto raw=[&](move_car::P6RawMeasurement&out,double value,double si,const std::string&unit,const std::string&source,const ros::Time&receipt,uint64_t sequence){
+                out.raw_value=value;out.value_si=si;out.raw_unit=unit;out.unit_si=unit;out.source=source;out.frame_id="base_link";out.receipt_stamp=receipt;
+                out.sequence=sequence;out.valid=std::isfinite(value)&&!receipt.isZero()&&receipt<=cycle_stamp;
+                out.unit_verified=out.frame_verified=p6_synthetic_||p7_guard_.configured();out.new_frame_known=p6_synthetic_;out.new_frame=p6_synthetic_;
+                // CAN hardware sampling is absent. Receipt sequence is only a ROS event counter.
+                out.hardware_stamp_verified=false;out.independent=false;
+            };
+            raw(wrapper.wheel_speed,p5_raw_state_.wheel.value,p5_raw_state_.wheel.value*wheel_speed_scale_,"m/s","car_message.back_wheel_speed",q.wheel_receipt_stamp,p6_can_receipt_sequence_);
+            wrapper.wheel_speed.raw_unit=p7_guard_.enabled?"chassis_raw_mm_per_s_engineering_contract":"chassis_raw_unverified";
+            wrapper.wheel_speed.receipt_steady_ns=p6_can_receipt_steady_;
+            ros::Time raw_steering_receipt;raw_steering_receipt.fromSec(p5_raw_state_.steering.receipt_stamp);
+            raw(wrapper.steering,p5_raw_state_.steering.value,p5_raw_state_.steering.value,"rad","car_message.turn_angle",raw_steering_receipt,p6_can_receipt_sequence_);
+            wrapper.steering.receipt_steady_ns=p6_can_receipt_steady_;
+            raw(wrapper.yaw_rate,p6_last_imu_.angular_velocity.z,p6_last_imu_.angular_velocity.z,"rad/s","imu.angular_velocity.z",p6_imu_receipt_,p6_imu_sequence_);
+            raw(wrapper.accel_x,p6_last_imu_.linear_acceleration.x,p6_last_imu_.linear_acceleration.x,"m/s2","imu.linear_acceleration.x",p6_imu_receipt_,p6_imu_sequence_);
+            raw(wrapper.accel_y,p6_last_imu_.linear_acceleration.y,p6_last_imu_.linear_acceleration.y,"m/s2","imu.linear_acceleration.y",p6_imu_receipt_,p6_imu_sequence_);
+            raw(wrapper.accel_z,p6_last_imu_.linear_acceleration.z,p6_last_imu_.linear_acceleration.z,"m/s2","imu.linear_acceleration.z",p6_imu_receipt_,p6_imu_sequence_);
+            for(auto*im:{&wrapper.yaw_rate,&wrapper.accel_x,&wrapper.accel_y,&wrapper.accel_z}){
+                im->source_stamp=p6_last_imu_.header.stamp;im->frame_id=p6_last_imu_.header.frame_id;
+                im->receipt_steady_ns=p6_imu_receipt_steady_;
+                im->frame_verified=(p6_synthetic_||p7_guard_.configured())&&p6_last_imu_.header.frame_id==p5_imu_frame_;
+                im->hardware_stamp_verified=false; // ROS header alone does not prove physical clock alignment.
+            }
+            wrapper.imu_frame_verified=wrapper.accel_z.frame_verified;wrapper.observation_steady_ns=p6_cycle_entry_steady_;wrapper.request_steady_ns=p5SteadyNs();
+            if(p7_reference_revalidation_&&!tracking_poses_.empty()){
+                p7_request_message_.reset(new move_car::P6ControlRequest(wrapper));p7_request_pose_=tracking_poses_.back();}
+            p6_request_pub_.publish(wrapper);
+        }else p5_request_pub_.publish(q);
+    }
+
+    void controlTimer(const ros::TimerEvent& event) {
+        const auto p5_callback_start=p5SteadyNs();const auto p5_cpu_start=p5ThreadCpuNs();++p5_cycle_;
+        if(p6_enabled_)p6_cycle_entry_steady_=p5_callback_start;
+        const auto research_start=research_enabled_ ? std::chrono::steady_clock::now() :
+            std::chrono::steady_clock::time_point();
         const ros::Time now = ros::Time::now();
+        p5_cycle_dt_=controlDt(now);
         ControllerDebug debug;
         ControlCmd cmd = computeCommand(now, debug);
+        const double research_compute_ms=research_enabled_ ?
+            std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-research_start).count() : 0.;
+        const auto p5_arbitration_start=p5SteadyNs();const auto p5_algorithm_cpu_end=p5ThreadCpuNs();
+        const auto p5_request=p5ArbitrationRequest(now,cmd,debug);
+        const bool terminal_handoff=p7_terminal_handoff_enabled_&&p6_mode_=="flat_nmpc_slqr";
+        const bool p6_speed_guard_modified=p6_enabled_&&std::abs(p5_request.legacy.speed-cmd.speed)>1e-12;
+        unified_control::ControlCandidate p5_candidate;
+        const bool p5_candidate_present=p5_mailbox_.tryRead(p5_candidate);
+        // The actual inter-publication control step can differ from the
+        // worker's proposed application grid. Re-evaluate applied acceleration
+        // using current dt before all transition/jerk checks; never double-filter.
+        if(p5_candidate_present)p5_candidate.command_acceleration=
+            (p5_candidate.command.speed-p5_request.previous.speed)/p5_request.dt;
+        const bool check_candidate=p5_candidate_present&&!(terminal_handoff&&p7_terminal_handoff_.latched());
+        const std::string p7_validation_reason=check_candidate?p7RevalidateCandidate(p5_request,p5_candidate):"";
+        auto p5_decision=unified_control::ControlArbiter::decide(
+            p5_request,check_candidate?&p5_candidate:nullptr);
+        if(terminal_handoff){
+            // Supervised trials bind a fixed smooth nominal model at startup.
+            const auto& profile=p6_control_config_.profiles[0];
+            const auto& model=profile.solver.model;
+            if(debug.safe_stop)p5_decision.safety_stop=true;
+            const bool source_fresh=debug.reference_status_age>=0.&&debug.accepted_source_age>=0.&&
+                debug.reference_status_age+debug.accepted_source_age<=reference_soft_timeout_;
+            const bool progress_fresh=source_fresh&&
+                reference_status_.geometry_progress_age>=0.&&
+                debug.reference_status_age+reference_status_.geometry_progress_age<=reference_soft_timeout_;
+            const bool advancing=p7_live_handoff_&&
+                ((progress_fresh&&debug.reference_status_mode=="TRACK_GOOD")||
+                 debug.p7_prefix_progress_stamp>0.);
+            p5_decision=p7_terminal_handoff_.apply(p5_request,p5_decision,debug.usable_arc_remaining,
+                debug.dynamic_horizon_reserve,model.speed_delay+model.speed_tau,
+                !debug.reference_held&&!debug.reference_stale,p5_request.speed_cap,profile.speed_cap,advancing,
+                debug.p7_prefix_preview_target>=0.,
+                {debug.p7_verified_prefix,debug.p7_prefix_progress_stamp,degraded_speed_limit_});
+        }
+        const double unshaped_steering=p5_decision.command.steering;
+        bool steering_handoff_shaped=false;
+        if(p7_smooth_steering_handoff_&&p6_mode_=="flat_nmpc_slqr"&&p5_decision.fallback&&
+           p5_request.state.valid&&p5_request.state.causal&&p5_request.supervised.armed(p5_request.steady_now)&&
+           debug.reference_status_mode=="TRACK_GOOD"&&debug.reference_geometry_valid&&
+           !debug.safe_stop&&!debug.reference_held&&!debug.reference_stale&&
+           !debug.near_far_sign_conflict&&!debug.sign_cross_fast_active&&
+           std::isfinite(debug.front_axle_e_ct)&&std::abs(debug.front_axle_e_ct)<=continuous_cte_low_&&
+           debug.reference_status_age>=0.&&debug.accepted_source_age>=0.&&
+           debug.reference_status_age+debug.accepted_source_age<=reference_soft_timeout_&&
+           p7_validation_reason.find("revalidation_reference_jump_outside_local_domain")==std::string::npos&&
+           p7_validation_reason.find("revalidation_geometry_invalid")==std::string::npos&&
+           p7_validation_reason.find("revalidation_common_spatial_support_insufficient")==std::string::npos&&
+           p7_validation_reason.find("revalidation_reference_horizon_invalid")==std::string::npos){
+            const auto* latest=p5_ledger_.latest();
+            const auto* older=p5_ledger_.preceding();
+            if(latest&&older)steering_handoff_shaped=unified_control::shapeP7SteeringHandoff(
+                p5_request,*older,*latest,p5SteadyNs(),std::atan(wheelbase_*debug.kappa_ff),
+                debug.active_steer_limit,p5_decision);
+        }
+        if(p5_decision.fallback)++p5_rejected_candidates_;
+        cmd.speed=p5_decision.command.speed;cmd.steering=p5_decision.command.steering;
+        double p5_actual_accel=(cmd.speed-p5_request.previous.speed)/p5_request.dt;
+        const bool overridden=p5_decision.selected_nmpc||p5_decision.terminal_handoff||p6_speed_guard_modified||
+            p5_decision.bounded_prefix_following;
+        double p5_legacy_accel_state=overridden?p5_actual_accel:p5_pending_accel_;
+        if(overridden){debug.cmd_accel=p5_actual_accel;
+            debug.cmd_jerk=(p5_actual_accel-p5_request.previous_acceleration)/p5_request.dt;debug.delta_cmd=cmd.steering;
+            debug.speed_target_filtered=debug.speed_target_limited=cmd.speed;}
+        const double p5_arbitration_ms=(p5SteadyNs()-p5_arbitration_start)*1e-6;
         last_control_time_ = now;
-        if(origin_control_log_) {
+        auto write_origin_record=[&] {
+            if(!origin_control_log_)return;
             origin_control_log_<<std::fixed<<std::setprecision(9)<<origin_run_id_<<","<<now.toSec()<<","
                 <<active_path_stamp_.toSec()<<","<<path_transport_yaw_<<","<<path_pose_query_dt_<<",1,"
                 <<(debug.path_valid?debug.e_y:std::numeric_limits<double>::quiet_NaN())<<","
@@ -8166,12 +8954,132 @@ private:
                 <<(steering_sample_guard_.deferred?1:0)<<","<<steering_sample_guard_.deferred_count<<","
                 <<(steering_sample_guard_.accepted_stamp.isZero()?-1.:
                     (now-steering_sample_guard_.accepted_stamp).toSec())<<"\n";
-        }
+        };
 
+        // The single outlet rechecks live guards after preview and arbitration.
+        if(p7_guard_.enabled){
+            const char* stop=nullptr;
+            const auto boundary_steady=p5SteadyNs();
+            const auto& wheel=p5_raw_state_.wheel;
+            const bool stopped=p5_request.previous.speed<=1e-7&&wheel.valid&&wheel.receipt_stamp>0.&&
+                wheel.receipt_stamp<=now.toSec()&&now.toSec()-wheel.receipt_stamp<=p5_request.maximum_state_age&&
+                std::abs(wheel.value*wheel_speed_scale_)<=.015;
+            if(!p7_guard_.armed(boundary_steady*1e-9)){
+                // Keep observing clean zero-speed releases before the lease,
+                // so arming does not introduce an extra startup hold.
+                if(p7_live_handoff_)p7_publication_guard_.assess(
+                    boundary_steady,p5_last_publish_steady_,stopped,false);
+                stop="supervised_lease_expired_before_publish";
+            }else if(p7_async_preview_enabled_){
+                const auto boundary=ros::Time::now();
+                const auto leader=lead_observer_.state(boundary);
+                const auto& model=p6_control_config_.profiles[0].solver.model;
+                using Release=unified_control::P7PublicationGuard::Release;
+                unified_control::Command deadline_brake;
+                const bool late=unified_control::P7PublicationGuard::deadlineMissed(
+                    boundary_steady,p5_last_publish_steady_);
+                const bool fresh_for_brake=late&&!p5_decision.safety_stop&&!debug.safe_stop&&
+                    !p7_terminal_handoff_.latched()&&!debug.reference_held&&!debug.reference_stale&&
+                    !debug.bad_reference_guard_active&&debug.reference_status_mode=="TRACK_GOOD"&&
+                    debug.reference_status_age>=0.&&debug.accepted_source_age>=0.&&
+                    debug.reference_status_age+debug.accepted_source_age+(boundary-now).toSec()<=reference_soft_timeout_&&
+                    p5_request.state.receipt_stamp>0.&&p5_request.state.receipt_stamp<=boundary.toSec()&&
+                    boundary.toSec()-p5_request.state.receipt_stamp<=p5_request.maximum_state_age;
+                const bool brake_available=fresh_for_brake&&p7_publication_guard_.brakingCommand(
+                    p5_request,(boundary_steady-p5_last_publish_steady_)*1e-9,debug.usable_arc_remaining,
+                    debug.dynamic_horizon_reserve,model.speed_delay+model.speed_tau,deadline_brake);
+                const auto release=p7_live_handoff_?p7_publication_guard_.assess(
+                    boundary_steady,p5_last_publish_steady_,stopped,brake_available):Release::OnTime;
+                if(vehicle_.chassis_error!=0||collision_.needsStop(boundary)||
+                   lead_observer_.emergencyStop()||(leader.valid&&leader.distance<=hard_stop_distance_))
+                    stop="live_safety_stop_before_publish";
+                else if(release==Release::Stop)stop="publication_deadline_hold";
+                else if(release==Release::BoundedBrake){
+                    cmd={deadline_brake.speed,deadline_brake.steering};
+                    p5_decision.selected_nmpc=false;p5_decision.terminal_handoff=false;
+                    p5_decision.fallback=true;p5_decision.candidate_sequence=0;
+                    p5_decision.reason="publication_single_release_bounded_brake";
+                }
+                else if(p5_decision.selected_nmpc&&
+                    (active_path_stamp_.isZero()||active_path_stamp_>boundary||
+                     (boundary-active_path_stamp_).toSec()>p5_request.maximum_reference_age||
+                     (boundary.toSec()-p5_candidate.snapshot_stamp)>p5_request.maximum_candidate_age||
+                     (boundary.toSec()-p5_request.state.receipt_stamp)>p5_request.maximum_state_age||
+                     std::fabs(boundary.toSec()-p5_candidate.expected_apply_stamp)>p5_request.maximum_apply_time_error||
+                     p5_decision.base_sequence!=p5_ledger_.lastSequence()))
+                    stop="selected_candidate_expired_before_publish";
+            }
+            cmd.speed=p7_guard_.boundedSpeed(cmd.speed);
+            if(stop){
+                if(steering_handoff_shaped)cmd.steering=unshaped_steering;
+                cmd.speed=0.;p5_decision.selected_nmpc=false;p5_decision.terminal_handoff=false;
+                p5_decision.safety_stop=true;p5_decision.candidate_sequence=0;p5_decision.reason=stop;
+            }
+            p5_actual_accel=(cmd.speed-p5_request.previous.speed)/p5_request.dt;
+            p5_legacy_accel_state=p5_actual_accel;
+        }
         geometry_msgs::Twist msg;
         msg.linear.x = cmd.speed;
         msg.angular.z = cmd_steer_sign_ * cmd_steer_scale_ * cmd.steering;
-        cmd_pub_.publish(msg);
+        unified_control::PublishedCommandRecord p5_record;
+        p5_record.sequence=p5_ledger_.nextSequence();p5_record.epoch=p5_epoch_;
+        p5_record.cycle_stamp=now.toSec();p5_record.command={cmd.speed,cmd.steering};
+        p5_record.acceleration=p5_actual_accel;p5_record.selected_nmpc=p5_decision.selected_nmpc;
+        p5_record.candidate_sequence=p5_decision.candidate_sequence;
+        p5_record.publish_ros_start=ros::Time::now().toSec();p5_record.publish_steady_start_ns=p5SteadyNs();
+        try {
+            if(p5_guard_.permits()&&p5_fault_=="publish_failure")throw std::runtime_error("isolated_injected_publish_failure");
+            cmd_pub_.publish(msg);p5_record.ros_publish_returned=true;
+        }catch(const std::exception& e){ROS_ERROR_THROTTLE(1.,"P5 publish failed: %s",e.what());}
+        p5_record.publish_steady_end_ns=p5SteadyNs();p5_record.publish_ros_end=ros::Time::now().toSec();
+        p5_record.stamp=p5_record.publish_ros_end;
+        const auto p5_commit_start=p5SteadyNs();
+        const auto p5_commit=p5_ledger_.commit(p5_record);
+        if(!p5_commit.accepted||std::string(p5_commit.reason)=="published_recorded_history_gap")++p5_history_gaps_;
+        if(p5_record.ros_publish_returned){
+            // Sole commit of actual selected wire command; never a solver or
+            // discarded SLQR proposal. Legacy model keys retain cycle time,
+            // separately recorded from actual publish-call times, for numeric
+            // compatibility. ROS enqueue return is NOT physical execution ACK.
+            filtered_cmd_=cmd;last_cmd_accel_=p5_legacy_accel_state;
+            cps_.recordCommand(cmd.steering,now);recordSteeringCommand(cmd.steering,now);
+            if(!debug.safe_stop)debug.steer_sign_mismatch=updateSteerSignDiagnostic(cmd.steering,now);
+            if(!p5_ledger_.valid()&&p5_ledger_.size()>2)
+                p5_ledger_.certifyRecovery(p5_ledger_.lastSequence(),now.toSec()-.75,.60);
+        }
+        const double p5_commit_ms=(p5SteadyNs()-p5_commit_start)*1e-6;
+        move_car::P5PublishedCommand p5_published;
+        p5_published.header.stamp.fromSec(p5_record.stamp);p5_published.header.seq=static_cast<uint32_t>(p5_cycle_);
+        p5_published.schema_version=1;p5_published.epoch=p5_epoch_;p5_published.sequence=p5_record.sequence;
+        p5_published.cycle=p5_cycle_;p5_published.reference_revision=active_path_stamp_.toNSec();
+        p5_published.config_revision=p5_config_revision_;p5_published.run_id=research_run_id_;p5_published.config_hash=p5_config_hash_;
+        p5_published.requested_mode=p5_mode_;p5_published.owner=p5_decision.selected_nmpc?"nmpc":
+            (p5_decision.terminal_handoff?"terminal_handoff":
+             (std::string(p5_decision.reason)=="publication_single_release_bounded_brake"?"deadline_brake":"legacy_slqr"));
+        p5_published.reason=p5_decision.reason;p5_published.speed=cmd.speed;p5_published.steering=cmd.steering;
+        if(!p7_validation_reason.empty())p5_published.reason+=";"+p7_validation_reason;
+        if(steering_handoff_shaped&&!p5_decision.safety_stop&&
+           std::abs(cmd.steering-p5_decision.command.steering)<1e-12)
+            p5_published.reason+=";steering_handoff_reversal_limited";
+        if(debug.p7_preview_status)p5_published.reason+=std::string(";")+debug.p7_preview_status;
+        if(debug.p7_prefix_preview_target>=0.)
+            p5_published.reason+=";prefix_stopping_target="+std::to_string(debug.p7_prefix_preview_target);
+        if(p6_speed_guard_modified)p5_published.reason+=";p6_conservative_speed_recovery";
+        p5_published.acceleration=p5_actual_accel;p5_published.cycle_stamp=now;
+        p5_published.control_dt=p5_request.dt;
+        p5_published.legacy_acceleration_state=p5_legacy_accel_state;
+        p5_published.publish_ros_start.fromSec(p5_record.publish_ros_start);p5_published.publish_ros_end.fromSec(p5_record.publish_ros_end);
+        p5_published.publish_steady_start_ns=p5_record.publish_steady_start_ns;p5_published.publish_steady_end_ns=p5_record.publish_steady_end_ns;
+        p5_published.wire_speed=msg.linear.x;p5_published.wire_steering=msg.angular.z;
+        p5_published.publish_returned=p5_record.ros_publish_returned;p5_published.history_committed=p5_commit.accepted;
+        p5_published.physical_execution_confirmed=false;p5_published.failure_reason=p5_commit.reason;
+        if(p5_diagnostics_enabled_||p5_mode_!="legacy_slqr")p5_pub_.publish(p5_published);
+        if(p5_record.ros_publish_returned&&p5_commit.accepted)
+            p5PublishRequest(now,debug,p5_record,p5_request,terminal_handoff&&p7_terminal_handoff_.latched());
+        write_origin_record();
+        // Research runtime has no command publisher; its result is diagnostic only.
+        if(p5_record.ros_publish_returned)research_shadow_.tick({cmd.speed,cmd.steering},debug.planned_speed,now.toSec(),
+                              debug.path_valid,debug.safe_stop);
         writeRuntimeDebug(now, debug, cmd);
         flushDebugLogs(now);
 
@@ -8236,6 +9144,75 @@ private:
             debug.oscillation_score,
             debug.safe_stop ? 1 : 0,
             debug.stop_reason.c_str());
+        if(research_enabled_) {
+            move_car::ControlResearchTelemetry t;
+            t.header.stamp=now;t.schema_version=1;t.run_id=research_run_id_;
+            t.reference_stamp=active_path_stamp_;t.tracking_valid=debug.path_valid;
+            const double missing=std::numeric_limits<double>::quiet_NaN();
+            t.lateral_error=debug.path_valid?debug.e_y:missing;
+            t.heading_error=debug.path_valid?debug.e_theta:missing;
+            t.measured_speed_fused=vehicle_.speed_valid?vehicle_.speed:missing;
+            t.target_speed=debug.path_valid?debug.commanded_v_ref:missing;
+            t.command_speed=cmd.speed;t.command_steering=cmd.steering;
+            t.command_acceleration=debug.safe_stop?missing:debug.cmd_accel;
+            t.command_jerk=debug.safe_stop?missing:debug.cmd_jerk;
+            t.steering_feedback_filtered=vehicle_.steering_valid?vehicle_.steering_feedback:missing;
+            t.predicted_steering=predicted_actual_delta_;
+            t.yaw_rate_error=debug.path_valid?debug.yaw_rate_error:missing;
+            t.solver_attempted=research_solver_attempted_;
+            t.solver_ok=research_solver_attempted_ && origin_solver_ok_;
+            t.iterations=research_iterations_;
+            t.objective=research_solver_attempted_?debug.slqr_cost:missing;
+            t.slqr_steering=research_solver_attempted_?last_slqr_delta_:missing;
+            t.solve_ms=research_solve_ms_;t.compute_ms=research_compute_ms;
+            t.timer_lateness_ms=(event.current_real-event.current_expected).toSec()*1000.;
+            t.steering_rate_limited=debug.steer_rate_limit_active;
+            t.steering_saturated=std::fabs(cmd.steering)>=std::min(0.32,max_steer_)-1e-6;
+            t.safe_stop=debug.safe_stop;t.collision_stop=debug.collision_stop_active;
+            t.braking_reference=debug.reference_braking_only;t.mode=debug.control_mode;
+            t.stop_reason=debug.stop_reason;t.speed_cap_reason=debug.speed_cap_winner;
+            t.fallback_reason=debug.control_fallback_reason;
+            t.nmpc_active=p5_decision.selected_nmpc&&p5_record.ros_publish_returned;
+            t.callback_before_telemetry_ms=std::chrono::duration<double,std::milli>(
+                std::chrono::steady_clock::now()-research_start).count();
+            research_pub_.publish(t);
+        }
+        if(p5_diagnostics_enabled_||p5_mode_!="legacy_slqr"){
+            move_car::P5ControlDiagnostics d;d.header.stamp=now;d.schema_version=1;d.epoch=p5_epoch_;d.cycle=p5_cycle_;
+            d.command_sequence=p5_ledger_.lastSequence();d.candidate_cycle=p5_candidate_present?p5_candidate.sequence:0;
+            d.requested_mode=p5_mode_;d.selected_owner=p5_published.owner;d.reason=p5_decision.reason;
+            if(!p7_validation_reason.empty())d.reason+=";"+p7_validation_reason;
+            if(debug.p7_preview_status)d.reason+=std::string(";")+debug.p7_preview_status;
+            if(p6_speed_guard_modified)d.reason+=";p6_conservative_speed_recovery";
+            d.isolated_test=p5_guard_.permits();d.physical_authority=p7_guard_.configured();d.state_valid=p5_request.state.valid;
+            d.history_valid=p5_ledger_.valid();d.candidate_available=p5_candidate_present;
+            d.candidate_accepted=p5_decision.selected_nmpc;d.emergency_stop=p5_request.safety_stop||p5_request.following_stop||(p7_guard_.enabled&&p5_decision.safety_stop);
+            d.reference_valid=p5_request.reference.valid;d.algorithm_ms=research_enabled_?research_compute_ms:
+                (p5_arbitration_start-p5_callback_start)*1e-6;
+            d.callback_ms=(p5SteadyNs()-p5_callback_start)*1e-6;
+            d.previous_callback_total_ms=p5_last_callback_ms_;
+            d.publish_returned=p5_record.ros_publish_returned;d.history_committed=p5_commit.accepted;
+            d.queue_delay_ms=std::max(0.,(event.current_real-event.current_expired).toSec()*1000.);
+            d.wakeup_lateness_ms=(event.current_expired-event.current_expected).toSec()*1000.;
+            d.callback_entry_delay_ms=std::max(0.,(now-event.current_real).toSec()*1000.);
+            const auto cpu_now=p5ThreadCpuNs();d.cpu_clock_valid=p5_cpu_start>0&&cpu_now>=p5_cpu_start;
+            d.callback_cpu_ms=d.cpu_clock_valid?(cpu_now-p5_cpu_start)*1e-6:-1.;
+            d.previous_callback_cpu_ms=p5_last_callback_cpu_ms_;
+            d.algorithm_cpu_ms=d.cpu_clock_valid?(p5_algorithm_cpu_end-p5_cpu_start)*1e-6:-1.;
+            d.callback_wait_proxy_ms=d.cpu_clock_valid?std::max(0.,d.callback_ms-d.callback_cpu_ms):-1.;
+            d.timer_lateness_ms=(event.current_real-event.current_expected).toSec()*1000.;
+            d.arbitration_ms=p5_arbitration_ms;d.history_commit_ms=p5_commit_ms;
+            d.publish_ms=(p5_record.publish_steady_end_ns-p5_record.publish_steady_start_ns)*1e-6;
+            d.publish_interval_ms=p5_last_publish_steady_?static_cast<double>(p5_record.publish_steady_start_ns-p5_last_publish_steady_)*1e-6:0.;
+            d.candidate_age_ms=p5_candidate_present?(now.toSec()-p5_candidate.snapshot_stamp)*1000.:-1.;
+            d.candidate_solve_ms=p5_candidate_present?p5_candidate.solve_ms:0.;
+            d.history_gaps=p5_history_gaps_;d.rejected_candidates=p5_rejected_candidates_;
+            p5_diagnostics_pub_.publish(d);
+        }
+        if(p5_record.ros_publish_returned)p5_last_publish_steady_=p5_record.publish_steady_start_ns;
+        p5_last_callback_ms_=(p5SteadyNs()-p5_callback_start)*1e-6;
+        const auto p5_cpu_end=p5ThreadCpuNs();
+        p5_last_callback_cpu_ms_=p5_cpu_start&&p5_cpu_end>=p5_cpu_start?(p5_cpu_end-p5_cpu_start)*1e-6:-1.;
     }
 
     ros::NodeHandle nh_;
@@ -8267,9 +9244,50 @@ private:
     FlatnessErrorExtractor extractor_;
     CustomVelocityPlanner velocity_planner_;
     SpatialSLQR slqr_;
+    unified_control::PreviewExchange<SpatialSLQR::PreviewJob,SpatialSLQR::PreviewResult> p7_preview_;
+    bool p7_async_preview_enabled_=false;
+    bool p7_live_handoff_=false;
+    bool p7_qualify_chassis_motion_=false;
+    bool p7_retime_command_increments_=false,p7_smooth_steering_handoff_=false;
+    bool p7_spatial_reference_continuity_=false;
+    unified_control::P7PublicationGuard p7_publication_guard_;
 
+    bool research_enabled_=false,research_solver_attempted_=false;
+    research_control::ResearchRosBridge research_shadow_;
+    std::string research_run_id_;
+    ros::Publisher research_pub_;
+    std::string p5_terrain_="unknown",p5_mode_="legacy_slqr",p5_imu_frame_,p5_config_hash_,p5_fault_;
+    bool p5_diagnostics_enabled_=false,p5_nominal_contract_=false,p5_adaptive_gate_=false;
+    double p5_pending_accel_=0.,p5_speed_tau_=.20,p5_lateral_limit_=.35,p5_cycle_dt_=1./30.,p5_last_callback_ms_=0.,p5_last_callback_cpu_ms_=0.;
+    uint64_t p5_epoch_=1,p5_cycle_=0,p5_config_revision_=1,p5_last_publish_steady_=0,p5_rejected_candidates_=0,p5_history_gaps_=0;
+    unified_control::SimulationGuard p5_guard_;
+    unified_control::SupervisedGuard p7_guard_;ros::Subscriber p7_lease_sub_;uint64_t p7_rejected_leases_=0;
+    bool p7_reference_revalidation_=false,p6_speed_preview_=false,p6_synchronized_preview_=false,p6_terminal_approach_=false;TrackingPose p7_request_pose_;
+    bool p6_actuator_aligned_preview_=false;
+    bool p7_terminal_handoff_enabled_=false;
+    unified_control::TerminalHandoff p7_terminal_handoff_;
+    move_car::P6ControlRequest::Ptr p7_request_message_;
+    move_car::P6ControlCandidate::ConstPtr p7_candidate_message_;
+    std::vector<research_control::ReferencePoint> p7_previous_geometry_,p7_latest_geometry_;
+    research_control::P7ReferenceRevalidation::Workspace p7_revalidation_workspace_;
+    unified_control::LocalInitializationInput p5_raw_state_;
+    unified_control::CommandLedger p5_ledger_;
+    unified_control::LatestCandidateMailbox p5_mailbox_;
+    std::vector<PathPoint> p5_reference_points_;
+    ros::Publisher p5_pub_,p5_request_pub_,p5_diagnostics_pub_;
+    ros::Subscriber p5_candidate_sub_,p5_mode_sub_,p5_fault_sub_;
+    bool p6_enabled_=false,p6_synthetic_=false;std::string p6_session_,p6_mode_,p6_shadow_mode_;
+    uint64_t p6_can_receipt_sequence_=0,p6_imu_sequence_=0;sensor_msgs::Imu p6_last_imu_;ros::Time p6_imu_receipt_;
+    uint64_t p6_can_receipt_steady_=0,p6_imu_receipt_steady_=0,p6_cycle_entry_steady_=0;
+    ros::Publisher p6_request_pub_;ros::Subscriber p6_candidate_sub_,p6_terrain_sub_;
+    research_control::P6LayeredConfig p6_control_config_;research_control::P6SceneManager p6_control_scenes_;
+    unsigned research_iterations_=0;
+    double research_solve_ms_=0.;
     VehicleState vehicle_;
     SteeringSampleGuard steering_sample_guard_;
+    bool p6_qualified_steering_=false;
+    bool p6_separated_speed_target_=false;
+    research_control::QualifiedSteeringSample p6_steering_sample_;
     ControlCmd filtered_cmd_;
     PathBuffer reference_path_;
     ReferenceRateCache reference_rate_cache_;
@@ -8628,3 +9646,4 @@ int main(int argc, char** argv) {
     ros::spin();
     return 0;
 }
+

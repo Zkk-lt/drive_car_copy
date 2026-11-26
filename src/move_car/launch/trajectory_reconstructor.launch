@@ -4,6 +4,11 @@
 
 
 <launch>
+  <arg name="smooth" default="true"/>
+  <arg name="trial_dir" default="$(find move_car)/.smooth_trial"/>
+  <arg name="direct_preflight" default="true"/>
+  <arg name="smooth_preflight" value="" unless="$(eval arg('smooth') and arg('direct_preflight'))"/>
+  <arg name="smooth_preflight" value="$(find move_car)/scripts/smooth_launch_preflight.py reconstruct &quot;$(arg trial_dir)&quot;" if="$(eval arg('smooth') and arg('direct_preflight'))"/>
   <arg name="pkg" default="move_car"/>
   <arg name="node_type" default="trajectory_reconstructor"/>
   <arg name="node_name" default="trajectory_reconstructor"/>
@@ -12,7 +17,7 @@
         type="$(arg node_type)"
         name="$(arg node_name)"
         output="screen"
-        respawn="false">
+        respawn="false" launch-prefix="$(arg smooth_preflight)">
 
     <!-- Frames / topics -->
     <param name="base_frame" value="base_link"/>
@@ -350,4 +355,8 @@
     <param name="reference_max_length" value="20.0"/>
     <param name="reference_follow_raw_only" value="false"/>
   </node>
+  <group if="$(arg smooth)">
+    <rosparam command="load" file="$(find move_car)/config/control/tuning/candidates/p7_smooth_gap_flat8_20261125/reconstructor.yaml" ns="trajectory_reconstructor"/>
+    <rosparam command="load" file="$(arg trial_dir)/reconstructor.yaml" ns="trajectory_reconstructor"/>
+  </group>
 </launch>

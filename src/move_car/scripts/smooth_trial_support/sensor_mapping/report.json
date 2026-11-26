@@ -1,0 +1,591 @@
+{
+  "declared_axes": {
+    "device_type": 1,
+    "downstream_imu_yaw_sign": 1.0,
+    "driver_gyro_accel_map": "(x,-y,-z)",
+    "protocol_steering": "left_positive_right_negative"
+  },
+  "evidence_sources": [
+    {
+      "path": "/home/ubuntu/drive_car_copy/research_runs/p42_stationary_20261109T084222Z/LIVE_SENSOR_PROVENANCE.md",
+      "sha256": "573398e60351fc0cf391d0360fdb3ff73b4cc133313b35e398bfb60057303383"
+    },
+    {
+      "path": "/home/ubuntu/drive_car_copy/research_runs/p42_stationary_20261109T084222Z/hardware_protocol_0.txt",
+      "sha256": "0ff53daa40a8cd893c10e2fe4a996af539063c02a056d9d3a2d331e5129428f5"
+    },
+    {
+      "path": "/home/ubuntu/drive_car_copy/research_runs/p42_stationary_20261109T084222Z/hardware_document_sources.json",
+      "sha256": "b86b2da571387430e337df9f456aa81645ef4a701ce820ce50da06f4b57488ee"
+    },
+    {
+      "path": "/home/ubuntu/drive_car_copy/research_runs/p42_stationary_20261109T084222Z/driver_source_snapshot/home/ubuntu/drive_car/src/fdilink_ahrs/src/ahrs_driver.cpp",
+      "sha256": "1b709f21d60f82fb4a5b494638162dbb0789e7bd0838d0bdfd4e14bdc3b63c11"
+    },
+    {
+      "path": "/home/ubuntu/drive_car_copy/research_runs/p42_stationary_20261109T084222Z/driver_source_snapshot/home/ubuntu/drive_car/src/fdilink_ahrs/include/fdilink_data_struct.h",
+      "sha256": "6824ee09cf631cb069765be19fee38426f7c792a093a4324f7cb715004d17c77"
+    },
+    {
+      "path": "/home/ubuntu/drive_car_copy/research_runs/p42_stationary_20261109T084222Z/driver_source_snapshot/home/ubuntu/drive_car/src/move_car/src/movecar.cpp",
+      "sha256": "e3f0c269f4945176cf59d0d6c04395f9d2fe5afc09624e57f40f8c8bd21c18e0"
+    },
+    {
+      "path": "/home/ubuntu/drive_car_copy/src/move_car/launch/movecar_improved.launch",
+      "sha256": "bc8dfa26bc82d72959bb343cbb6f1b5cfa421217c3336ab7d47a00ecdc12a3f4"
+    }
+  ],
+  "generated_utc": "2026-11-16T10:35:01.967171+00:00",
+  "historical_command_speed_max_mps": 0.31997662271984717,
+  "kind": "historical_engineering_mapping_audit",
+  "limitations": [
+    "Historical engineering mapping is not independent physical calibration or deployment approval.",
+    "Positive steering/yaw association plus driver protocol does not independently certify world-left turn.",
+    "CAN hardware sampling, true-new-frame flag and actuator physical reception time remain unknown.",
+    "Driver feedback angle may be actual angle or setpoint echo; not independently established.",
+    "No independent ground speed; wheel proxy cannot establish true slip or 0.4 m/s real speed.",
+    "No absent NED samples, lost control events or timestamps are invented or interpolated.",
+    "Receipt lag associations are not physical pure actuator delay; no dynamic model fit is applied.",
+    "Historical S8 command max is below requested 0.4 m/s; new-speed performance remains unverified.",
+    "Independent physical sessions, installation transform and driver binary/source identity remain unverified.",
+    "Stationary means are descriptive; gyro/accelerometer bias is not automatically calibrated."
+  ],
+  "requested_speed_historical_closed_loop_verified": false,
+  "requested_speed_mps": 0.4,
+  "runs": [
+    {
+      "command_speed_driver_mps": {
+        "count": 0,
+        "maximum": null,
+        "mean": null,
+        "minimum": null
+      },
+      "command_steering_driver_rad": {
+        "count": 0,
+        "maximum": null,
+        "mean": null,
+        "minimum": null
+      },
+      "continuous_session_id": "p42_stationary_20261109T084222Z",
+      "data_origin": "real_vehicle",
+      "dynamic_direction_analysis": {
+        "reason": "no_control_commands_stationary_run",
+        "valid": false
+      },
+      "event_count": 4906,
+      "events": "/home/ubuntu/drive_car_copy/research_runs/p42_stationary_20261109T084222Z/runs/p42_A_20261109T084222Z_r1/events.jsonl",
+      "events_sha256": "00ca95cb1552baf2590b33ab94aa4df2f7f14de0d215b44d2cf57c4063c43fe1",
+      "imu_acceleration_z_driver_mps2": {
+        "count": 3503,
+        "maximum": 9.94295883178711,
+        "mean": 9.837605461405918,
+        "minimum": 9.788721084594727
+      },
+      "imu_frame_counts": {
+        "gyro_link": 3503
+      },
+      "imu_z_driver_radps": {
+        "count": 3503,
+        "maximum": 0.0031647169962525368,
+        "mean": 0.0009109264621449953,
+        "minimum": -0.001628972589969635
+      },
+      "local_writer_complete": true,
+      "manifest": "/home/ubuntu/drive_car_copy/research_runs/p42_stationary_20261109T084222Z/runs/p42_A_20261109T084222Z_r1/manifest.json",
+      "manifest_sha256": "1eadf1bbb5fd24819e4fc72363ae565de111efda33685206c7cd6a60811840da",
+      "publishers": {
+        "/car_message": {
+          "/carTop": 701
+        },
+        "/cmd_vel": {},
+        "/imu": {
+          "/ahrs_driver": 3503
+        }
+      },
+      "raw_steering_driver_rad": {
+        "count": 701,
+        "maximum": 0.0,
+        "mean": -0.005041785642351688,
+        "minimum": -0.005235987755982988
+      },
+      "raw_wheel_driver_mmps": {
+        "count": 701,
+        "maximum": 0.0,
+        "mean": 0.0,
+        "minimum": 0.0
+      },
+      "run_id": "p42_A_20261109T084222Z_r1",
+      "terrain": "smooth",
+      "topic_counts": {
+        "/car_message": 701,
+        "/cmd_vel": 0,
+        "/imu": 3503
+      },
+      "transport_losslessness_verified": false
+    },
+    {
+      "command_speed_driver_mps": {
+        "count": 7241,
+        "maximum": 0.31994498894745127,
+        "mean": 0.060380927368001956,
+        "minimum": 0.0
+      },
+      "command_steering_driver_rad": {
+        "count": 7241,
+        "maximum": 0.32,
+        "mean": -0.00219844714751892,
+        "minimum": -0.32
+      },
+      "continuous_session_id": "p42_s8_20261109T091200Z",
+      "data_origin": "real_vehicle",
+      "dynamic_direction_analysis": {
+        "command_vs_feedback_by_receipt_delay_s": {
+          "0.0": {
+            "count": 615,
+            "pearson": 0.8648011159484114,
+            "same_sign_count": 578,
+            "same_sign_fraction": 0.9398373983739837
+          },
+          "0.2": {
+            "count": 641,
+            "pearson": 0.9214774446495336,
+            "same_sign_count": 619,
+            "same_sign_fraction": 0.9656786271450858
+          },
+          "0.4": {
+            "count": 657,
+            "pearson": 0.9701269651467391,
+            "same_sign_count": 657,
+            "same_sign_fraction": 1.0
+          },
+          "0.6": {
+            "count": 668,
+            "pearson": 0.9753125869514039,
+            "same_sign_count": 668,
+            "same_sign_fraction": 1.0
+          }
+        },
+        "feedback_steer_vs_imu_z": {
+          "count": 663,
+          "pearson": 0.9121434446295567,
+          "same_sign_count": 663,
+          "same_sign_fraction": 1.0
+        },
+        "interpretation": "causal collector receipt-domain engineering association only; no independent world-left turn measurement",
+        "positive_speed_command_vs_wheel_proxy": {
+          "count": 1130,
+          "positive_wheel_count": 1130,
+          "positive_wheel_fraction": 1.0
+        },
+        "valid": true,
+        "wheel_proxy_tansteer_vs_imu_z_pearson": 0.9831740762574592
+      },
+      "event_count": 106302,
+      "events": "/home/ubuntu/drive_car_copy/research_runs/p42_s8_20261109T091200Z/runs/p42_s8_20261109T091200Z_r1/events.jsonl",
+      "events_sha256": "9e1d66c9a965ee522a70161bd5665ec861fafe236ce5a4ac8be73f367a9e3467",
+      "imu_acceleration_z_driver_mps2": {
+        "count": 60006,
+        "maximum": 19.692224502563477,
+        "mean": 9.840794800130684,
+        "minimum": -5.597995758056641
+      },
+      "imu_frame_counts": {
+        "gyro_link": 60006
+      },
+      "imu_z_driver_radps": {
+        "count": 60006,
+        "maximum": 0.41701990365982056,
+        "mean": 0.0010314486982279211,
+        "minimum": -0.27966296672821045
+      },
+      "local_writer_complete": true,
+      "manifest": "/home/ubuntu/drive_car_copy/research_runs/p42_s8_20261109T091200Z/runs/p42_s8_20261109T091200Z_r1/manifest.json",
+      "manifest_sha256": "36d59b3810a74484168cd4e9977e056f05e10fb4ac66995b499308984523eaf2",
+      "publishers": {
+        "/car_message": {
+          "/carTop": 11999
+        },
+        "/cmd_vel": {
+          "/publish_speed_turn": 7241
+        },
+        "/imu": {
+          "/ahrs_driver": 60006
+        }
+      },
+      "raw_steering_driver_rad": {
+        "count": 11999,
+        "maximum": 0.3131120678077827,
+        "mean": -0.004878907267549203,
+        "minimum": -0.31450833120937816
+      },
+      "raw_wheel_driver_mmps": {
+        "count": 11999,
+        "maximum": 403.0,
+        "mean": -20.630802566880572,
+        "minimum": -1826.0
+      },
+      "run_id": "p42_s8_20261109T091200Z_r1",
+      "terrain": "smooth",
+      "topic_counts": {
+        "/car_message": 11999,
+        "/cmd_vel": 7241,
+        "/imu": 60006
+      },
+      "transport_losslessness_verified": false
+    },
+    {
+      "command_speed_driver_mps": {
+        "count": 1786,
+        "maximum": 0.31994498894745127,
+        "mean": 0.16280290932663993,
+        "minimum": 0.0
+      },
+      "command_steering_driver_rad": {
+        "count": 1786,
+        "maximum": 0.32,
+        "mean": 0.011190816545377874,
+        "minimum": -0.2932327691411406
+      },
+      "continuous_session_id": "p42_s8_60s_20261109T091603Z",
+      "data_origin": "real_vehicle",
+      "dynamic_direction_analysis": {
+        "command_vs_feedback_by_receipt_delay_s": {
+          "0.0": {
+            "count": 390,
+            "pearson": 0.8492066575193044,
+            "same_sign_count": 361,
+            "same_sign_fraction": 0.9256410256410257
+          },
+          "0.2": {
+            "count": 407,
+            "pearson": 0.9250647526180605,
+            "same_sign_count": 395,
+            "same_sign_fraction": 0.9705159705159705
+          },
+          "0.4": {
+            "count": 421,
+            "pearson": 0.9613257887395777,
+            "same_sign_count": 421,
+            "same_sign_fraction": 1.0
+          },
+          "0.6": {
+            "count": 428,
+            "pearson": 0.9627986633895826,
+            "same_sign_count": 428,
+            "same_sign_fraction": 1.0
+          }
+        },
+        "feedback_steer_vs_imu_z": {
+          "count": 424,
+          "pearson": 0.9309676760965864,
+          "same_sign_count": 424,
+          "same_sign_fraction": 1.0
+        },
+        "interpretation": "causal collector receipt-domain engineering association only; no independent world-left turn measurement",
+        "positive_speed_command_vs_wheel_proxy": {
+          "count": 716,
+          "positive_wheel_count": 716,
+          "positive_wheel_fraction": 1.0
+        },
+        "valid": true,
+        "wheel_proxy_tansteer_vs_imu_z_pearson": 0.9771798650420497
+      },
+      "event_count": 13777,
+      "events": "/home/ubuntu/drive_car_copy/research_runs/p42_s8_60s_20261109T091603Z/runs/p42_s8_60s_20261109T091603Z_r1/events.jsonl",
+      "events_sha256": "9b68ca9170eea42273f4639d7b8291e48fe441c062b26d5eef489847c11b2481",
+      "imu_acceleration_z_driver_mps2": {
+        "count": 5998,
+        "maximum": 15.72508430480957,
+        "mean": 9.842046537412012,
+        "minimum": 5.972231864929199
+      },
+      "imu_frame_counts": {
+        "gyro_link": 5998
+      },
+      "imu_z_driver_radps": {
+        "count": 5998,
+        "maximum": 0.10915851593017578,
+        "mean": 0.002095249532117928,
+        "minimum": -0.08045853674411774
+      },
+      "local_writer_complete": true,
+      "manifest": "/home/ubuntu/drive_car_copy/research_runs/p42_s8_60s_20261109T091603Z/runs/p42_s8_60s_20261109T091603Z_r1/manifest.json",
+      "manifest_sha256": "48335bd32ace391d9cf34172e5c86e476f63635d4390f80c6bc73bf1ddd86799",
+      "publishers": {
+        "/car_message": {
+          "/carTop": 1200
+        },
+        "/cmd_vel": {
+          "/publish_speed_turn": 1786
+        },
+        "/imu": {
+          "/ahrs_driver": 5998
+        }
+      },
+      "raw_steering_driver_rad": {
+        "count": 1200,
+        "maximum": 0.3131120678077827,
+        "mean": 0.012138619503516222,
+        "minimum": -0.1699950691442477
+      },
+      "raw_wheel_driver_mmps": {
+        "count": 1200,
+        "maximum": 403.0,
+        "mean": 160.14333333333335,
+        "minimum": 0.0
+      },
+      "run_id": "p42_s8_60s_20261109T091603Z_r1",
+      "terrain": "smooth",
+      "topic_counts": {
+        "/car_message": 1200,
+        "/cmd_vel": 1786,
+        "/imu": 5998
+      },
+      "transport_losslessness_verified": false
+    },
+    {
+      "command_speed_driver_mps": {
+        "count": 5774,
+        "maximum": 0.31997662271984717,
+        "mean": 0.173017994874657,
+        "minimum": 0.0
+      },
+      "command_steering_driver_rad": {
+        "count": 5774,
+        "maximum": 0.32,
+        "mean": -0.08354894015567922,
+        "minimum": -0.32
+      },
+      "continuous_session_id": "p42_s8_extended_20261109T092533Z",
+      "data_origin": "real_vehicle",
+      "dynamic_direction_analysis": {
+        "command_vs_feedback_by_receipt_delay_s": {
+          "0.0": {
+            "count": 1520,
+            "pearson": 0.9183585997530751,
+            "same_sign_count": 1460,
+            "same_sign_fraction": 0.9605263157894737
+          },
+          "0.2": {
+            "count": 1583,
+            "pearson": 0.9556286026737335,
+            "same_sign_count": 1557,
+            "same_sign_fraction": 0.983575489576753
+          },
+          "0.4": {
+            "count": 1652,
+            "pearson": 0.9775270962222946,
+            "same_sign_count": 1645,
+            "same_sign_fraction": 0.9957627118644068
+          },
+          "0.6": {
+            "count": 1662,
+            "pearson": 0.981417842763308,
+            "same_sign_count": 1652,
+            "same_sign_fraction": 0.9939831528279182
+          }
+        },
+        "feedback_steer_vs_imu_z": {
+          "count": 1666,
+          "pearson": 0.9271207090686309,
+          "same_sign_count": 1661,
+          "same_sign_fraction": 0.996998799519808
+        },
+        "interpretation": "causal collector receipt-domain engineering association only; no independent world-left turn measurement",
+        "positive_speed_command_vs_wheel_proxy": {
+          "count": 2357,
+          "positive_wheel_count": 2357,
+          "positive_wheel_fraction": 1.0
+        },
+        "valid": true,
+        "wheel_proxy_tansteer_vs_imu_z_pearson": 0.9793779163733132
+      },
+      "event_count": 53372,
+      "events": "/home/ubuntu/drive_car_copy/research_runs/p42_s8_extended_20261109T092533Z/runs/p42_s8_extended_20261109T092533Z_r1/events.jsonl",
+      "events_sha256": "81373f7815d0e4d67b4c097110abc312eec07f9a207966897499c8f71dfba2c3",
+      "imu_acceleration_z_driver_mps2": {
+        "count": 25569,
+        "maximum": 16.674423217773438,
+        "mean": 9.83691700559735,
+        "minimum": 1.2685761451721191
+      },
+      "imu_frame_counts": {
+        "gyro_link": 25569
+      },
+      "imu_z_driver_radps": {
+        "count": 25569,
+        "maximum": 0.070809006690979,
+        "mean": -0.014460007451290944,
+        "minimum": -0.15502703189849854
+      },
+      "local_writer_complete": true,
+      "manifest": "/home/ubuntu/drive_car_copy/research_runs/p42_s8_extended_20261109T092533Z/runs/p42_s8_extended_20261109T092533Z_r1/manifest.json",
+      "manifest_sha256": "955de540431b89417627333889744a7291457c0c691fd8ccc123a70ac14078f6",
+      "publishers": {
+        "/car_message": {
+          "/carTop": 5114
+        },
+        "/cmd_vel": {
+          "/publish_speed_turn": 5774
+        },
+        "/imu": {
+          "/ahrs_driver": 25569
+        }
+      },
+      "raw_steering_driver_rad": {
+        "count": 5114,
+        "maximum": 0.24853488548399255,
+        "mean": -0.06303744289217036,
+        "minimum": -0.3131120678077827
+      },
+      "raw_wheel_driver_mmps": {
+        "count": 5114,
+        "maximum": 457.0,
+        "mean": 129.35979663668363,
+        "minimum": -24.0
+      },
+      "run_id": "p42_s8_extended_20261109T092533Z_r1",
+      "terrain": "smooth",
+      "topic_counts": {
+        "/car_message": 5114,
+        "/cmd_vel": 5774,
+        "/imu": 25569
+      },
+      "transport_losslessness_verified": false
+    },
+    {
+      "command_speed_driver_mps": {
+        "count": 6235,
+        "maximum": 0.30242087658055267,
+        "mean": 0.24315847231175822,
+        "minimum": 0.0
+      },
+      "command_steering_driver_rad": {
+        "count": 6235,
+        "maximum": 0.32,
+        "mean": -0.05586715763141145,
+        "minimum": -0.32
+      },
+      "continuous_session_id": "p42_smooth_final_20261109T094400Z",
+      "data_origin": "real_vehicle",
+      "dynamic_direction_analysis": {
+        "command_vs_feedback_by_receipt_delay_s": {
+          "0.0": {
+            "count": 2355,
+            "pearson": 0.957845320471163,
+            "same_sign_count": 2277,
+            "same_sign_fraction": 0.9668789808917198
+          },
+          "0.2": {
+            "count": 2446,
+            "pearson": 0.975181223236211,
+            "same_sign_count": 2414,
+            "same_sign_fraction": 0.9869174161896974
+          },
+          "0.4": {
+            "count": 2535,
+            "pearson": 0.9877344346599441,
+            "same_sign_count": 2530,
+            "same_sign_fraction": 0.9980276134122288
+          },
+          "0.6": {
+            "count": 2570,
+            "pearson": 0.990349416670361,
+            "same_sign_count": 2562,
+            "same_sign_fraction": 0.9968871595330739
+          }
+        },
+        "feedback_steer_vs_imu_z": {
+          "count": 2550,
+          "pearson": 0.9566604506858328,
+          "same_sign_count": 2547,
+          "same_sign_fraction": 0.9988235294117647
+        },
+        "interpretation": "causal collector receipt-domain engineering association only; no independent world-left turn measurement",
+        "positive_speed_command_vs_wheel_proxy": {
+          "count": 3398,
+          "positive_wheel_count": 3398,
+          "positive_wheel_fraction": 1.0
+        },
+        "valid": true,
+        "wheel_proxy_tansteer_vs_imu_z_pearson": 0.9806419075094509
+      },
+      "event_count": 56499,
+      "events": "/home/ubuntu/drive_car_copy/research_runs/p42_smooth_final_20261109T094400Z/runs/p42_smooth_final_20261109T094400Z_r1/events.jsonl",
+      "events_sha256": "8bbfb8fde1dabdac4495673c2f3a3aa7a16cb2c92438e237616b64a72ae2d8cf",
+      "imu_acceleration_z_driver_mps2": {
+        "count": 27161,
+        "maximum": 20.933300018310547,
+        "mean": 9.843268149678826,
+        "minimum": 2.8958449363708496
+      },
+      "imu_frame_counts": {
+        "gyro_link": 27161
+      },
+      "imu_z_driver_radps": {
+        "count": 27161,
+        "maximum": 0.1917165070772171,
+        "mean": -0.0107813973885287,
+        "minimum": -0.17313653230667114
+      },
+      "local_writer_complete": true,
+      "manifest": "/home/ubuntu/drive_car_copy/research_runs/p42_smooth_final_20261109T094400Z/runs/p42_smooth_final_20261109T094400Z_r1/manifest.json",
+      "manifest_sha256": "20f4b56e86bda220ed25c9f344d75ba17857f0751bf0fde5708865726220f3b4",
+      "publishers": {
+        "/car_message": {
+          "/carTop": 5432
+        },
+        "/cmd_vel": {
+          "/publish_speed_turn": 6235
+        },
+        "/imu": {
+          "/ahrs_driver": 27161
+        }
+      },
+      "raw_steering_driver_rad": {
+        "count": 5432,
+        "maximum": 0.28588493147667116,
+        "mean": -0.04083851962205141,
+        "minimum": -0.3120648702565861
+      },
+      "raw_wheel_driver_mmps": {
+        "count": 5432,
+        "maximum": 487.0,
+        "mean": 184.5009204712813,
+        "minimum": -8.0
+      },
+      "run_id": "p42_smooth_final_20261109T094400Z_r1",
+      "terrain": "smooth",
+      "topic_counts": {
+        "/car_message": 5432,
+        "/cmd_vel": 6235,
+        "/imu": 27161
+      },
+      "transport_losslessness_verified": false
+    }
+  ],
+  "schema_version": 1,
+  "selection": {
+    "imu_lookup": "latest receipt <= feedback receipt, no interpolation",
+    "imu_max_age_s": 0.05,
+    "minimum_abs_feedback_steering_rad": 0.03,
+    "minimum_abs_yaw_radps": 0.01,
+    "minimum_forward_raw_wheel": 100,
+    "purpose": "descriptive signal excitation selection, not calibrated confidence thresholds"
+  },
+  "tool": "/home/ubuntu/drive_car_copy/src/move_car/scripts/audit_p7_historical_mapping.py",
+  "tool_sha256": "706ac0f85b9935397a099751b48429dd8c52a90f004a09127b62ffd9683032b0",
+  "totals": {
+    "/car_message": 24446,
+    "/cmd_vel": 21036,
+    "/imu": 122237
+  },
+  "units": {
+    "command_angular_z": "steering_rad_not_yaw_rate",
+    "command_speed": "m/s_S8_driver_convention",
+    "feedback_steering": "rad_driver_conversion",
+    "imu_accel": "m/s^2_driver_declared",
+    "imu_gyro": "rad/s_driver_declared",
+    "wheel": "mm/s_driver_declared_signed_proxy"
+  }
+}

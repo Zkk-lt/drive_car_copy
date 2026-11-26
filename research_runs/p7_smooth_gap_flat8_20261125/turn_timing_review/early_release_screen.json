@@ -1,0 +1,293 @@
+{
+  "data_origin": "archived_real_frozen_requests_open_loop",
+  "archive": "p7real_20261126T165921_e62f8981",
+  "original_event_sha256": "07a73f67c18431495d5fced55090b5c03b0e71c1f80c709296c684e52c0dcd25",
+  "archive_binaries": {
+    "control_pub": "728ba5c29046028a97ced924da97d9360d0208263c9481d029ca8edbc6131d50",
+    "p5_nmpc_worker_node": "c00abf524cf65d70e9d95faea9611fc8ece25f84c68b7b4b9a319e3b2bd2031a"
+  },
+  "replay_binary_sha256": "45c5a999a9fb0114e997ead4f109375c4c04c0ec5d260a8480997d884ddbd192",
+  "phase_windows": [
+    [
+      "near_straight",
+      "17:01:01.873",
+      "17:01:03.473"
+    ],
+    [
+      "turn_tightening_approach",
+      "17:01:20.600",
+      "17:01:21.797"
+    ],
+    [
+      "turn_tightening",
+      "17:01:21.798",
+      "17:01:23.470"
+    ],
+    [
+      "turn_opening",
+      "17:01:31.425",
+      "17:01:33.265"
+    ],
+    [
+      "sustained_right",
+      "17:02:00.548",
+      "17:02:02.690"
+    ]
+  ],
+  "inclusion": {
+    "near_straight/fixture_rows": 58,
+    "near_straight/no_matching_effective_snapshot": 4,
+    "near_straight/observed": 64,
+    "near_straight/request_guard": 2,
+    "sustained_right/fixture_rows": 60,
+    "sustained_right/no_matching_effective_snapshot": 18,
+    "sustained_right/observed": 85,
+    "sustained_right/request_guard": 7,
+    "turn_opening/fixture_rows": 66,
+    "turn_opening/observed": 73,
+    "turn_opening/request_guard": 7,
+    "turn_tightening/fixture_rows": 60,
+    "turn_tightening/observed": 66,
+    "turn_tightening/request_guard": 6,
+    "turn_tightening_approach/fixture_rows": 44,
+    "turn_tightening_approach/observed": 48,
+    "turn_tightening_approach/request_guard": 4
+  },
+  "budget_ms": 8.0,
+  "reserve_option": 0.035,
+  "release_option": 2.0,
+  "limits": "Identical archived hard cap/model/limits/terminal endpoint/command history in each pair",
+  "note": "Recomputed nominal flat8+SLQR policy build; does not reconstruct asynchronous feedback, ROS candidate acceptance or closed-loop response. Frozen records are replayed without previous optimizer warm state, which the archive does not preserve.",
+  "groups": {
+    "near_straight": {
+      "cycles": 58,
+      "valid_before": 55,
+      "valid_after": 55,
+      "infeasible_before": {
+        "flatness_initial_speed_above_dynamic_cap": 3
+      },
+      "infeasible_after": {
+        "flatness_initial_speed_above_dynamic_cap": 3
+      },
+      "unchanged_cap": 58,
+      "same_terminal_contract": 58,
+      "target_speed_reduced": 0,
+      "unwind_enabled": 0,
+      "max_speed_reserve_mps": 0.0,
+      "max_release_weight": 0.0,
+      "tightening_signal_count": 0,
+      "opening_signal_count": 0,
+      "independently_revalidated_before": 55,
+      "independently_revalidated_after": 55,
+      "paired_feasible": 55,
+      "first_command_steering_changed": 1,
+      "first_command_speed_changed": 1,
+      "reserve_paired_feasible": 0,
+      "reserve_first_speed_delta_mps": null,
+      "reserve_predicted_speed_after_0p6s_delta_mps": null,
+      "release_paired_feasible": 0,
+      "release_first_steer_magnitude_delta_rad": null,
+      "release_predicted_steer_magnitude_after_0p6s_delta_rad": null,
+      "old_timeouts": 0,
+      "new_timeouts": 0,
+      "measured_nominal_policy_before_ms": {
+        "count": 58,
+        "p50": 3.276782,
+        "p95": 4.576495,
+        "p99": 6.753099,
+        "maximum": 6.753099
+      },
+      "measured_nominal_policy_after_ms": {
+        "count": 58,
+        "p50": 3.317887,
+        "p95": 4.942049,
+        "p99": 5.160881,
+        "maximum": 5.160881
+      }
+    },
+    "turn_tightening_approach": {
+      "cycles": 44,
+      "valid_before": 10,
+      "valid_after": 10,
+      "infeasible_before": {
+        "flatness_initial_speed_above_dynamic_cap": 34
+      },
+      "infeasible_after": {
+        "flatness_initial_speed_above_dynamic_cap": 34
+      },
+      "unchanged_cap": 44,
+      "same_terminal_contract": 44,
+      "target_speed_reduced": 15,
+      "unwind_enabled": 0,
+      "max_speed_reserve_mps": 0.034660017289054934,
+      "max_release_weight": 0.0,
+      "tightening_signal_count": 15,
+      "opening_signal_count": 0,
+      "independently_revalidated_before": 10,
+      "independently_revalidated_after": 10,
+      "paired_feasible": 10,
+      "first_command_steering_changed": 0,
+      "first_command_speed_changed": 0,
+      "reserve_paired_feasible": 0,
+      "reserve_first_speed_delta_mps": null,
+      "reserve_predicted_speed_after_0p6s_delta_mps": null,
+      "release_paired_feasible": 0,
+      "release_first_steer_magnitude_delta_rad": null,
+      "release_predicted_steer_magnitude_after_0p6s_delta_rad": null,
+      "old_timeouts": 0,
+      "new_timeouts": 0,
+      "measured_nominal_policy_before_ms": {
+        "count": 44,
+        "p50": 0.023743,
+        "p95": 4.052998,
+        "p99": 4.630989,
+        "maximum": 4.630989
+      },
+      "measured_nominal_policy_after_ms": {
+        "count": 44,
+        "p50": 0.024071,
+        "p95": 4.37981,
+        "p99": 4.674245,
+        "maximum": 4.674245
+      }
+    },
+    "turn_tightening": {
+      "cycles": 60,
+      "valid_before": 18,
+      "valid_after": 18,
+      "infeasible_before": {
+        "flatness_initial_speed_above_dynamic_cap": 21,
+        "flatness_first_command_speed_acceleration_jerk_bounds_empty": 21
+      },
+      "infeasible_after": {
+        "flatness_initial_speed_above_dynamic_cap": 21,
+        "flatness_first_command_speed_acceleration_jerk_bounds_empty": 21
+      },
+      "unchanged_cap": 60,
+      "same_terminal_contract": 60,
+      "target_speed_reduced": 49,
+      "unwind_enabled": 0,
+      "max_speed_reserve_mps": 0.03500000000000003,
+      "max_release_weight": 0.0,
+      "tightening_signal_count": 49,
+      "opening_signal_count": 0,
+      "independently_revalidated_before": 18,
+      "independently_revalidated_after": 18,
+      "paired_feasible": 18,
+      "first_command_steering_changed": 14,
+      "first_command_speed_changed": 13,
+      "reserve_paired_feasible": 14,
+      "reserve_first_speed_delta_mps": -0.0002593657376317171,
+      "reserve_predicted_speed_after_0p6s_delta_mps": -0.00314147697442424,
+      "release_paired_feasible": 0,
+      "release_first_steer_magnitude_delta_rad": null,
+      "release_predicted_steer_magnitude_after_0p6s_delta_rad": null,
+      "old_timeouts": 0,
+      "new_timeouts": 0,
+      "measured_nominal_policy_before_ms": {
+        "count": 60,
+        "p50": 0.030158,
+        "p95": 4.546126,
+        "p99": 5.12356,
+        "maximum": 5.12356
+      },
+      "measured_nominal_policy_after_ms": {
+        "count": 60,
+        "p50": 0.031398,
+        "p95": 4.585883,
+        "p99": 5.077319,
+        "maximum": 5.077319
+      }
+    },
+    "turn_opening": {
+      "cycles": 66,
+      "valid_before": 66,
+      "valid_after": 66,
+      "infeasible_before": {},
+      "infeasible_after": {},
+      "unchanged_cap": 66,
+      "same_terminal_contract": 66,
+      "target_speed_reduced": 0,
+      "unwind_enabled": 17,
+      "max_speed_reserve_mps": 0.0,
+      "max_release_weight": 0.18435778016005283,
+      "tightening_signal_count": 0,
+      "opening_signal_count": 16,
+      "independently_revalidated_before": 66,
+      "independently_revalidated_after": 66,
+      "paired_feasible": 66,
+      "first_command_steering_changed": 10,
+      "first_command_speed_changed": 4,
+      "reserve_paired_feasible": 0,
+      "reserve_first_speed_delta_mps": null,
+      "reserve_predicted_speed_after_0p6s_delta_mps": null,
+      "release_paired_feasible": 17,
+      "release_first_steer_magnitude_delta_rad": 0.0,
+      "release_predicted_steer_magnitude_after_0p6s_delta_rad": 0.0,
+      "old_timeouts": 0,
+      "new_timeouts": 0,
+      "measured_nominal_policy_before_ms": {
+        "count": 66,
+        "p50": 3.393428,
+        "p95": 4.53271,
+        "p99": 5.183221,
+        "maximum": 5.183221
+      },
+      "measured_nominal_policy_after_ms": {
+        "count": 66,
+        "p50": 3.379323,
+        "p95": 4.608093,
+        "p99": 5.159081,
+        "maximum": 5.159081
+      }
+    },
+    "sustained_right": {
+      "cycles": 60,
+      "valid_before": 47,
+      "valid_after": 47,
+      "infeasible_before": {
+        "flatness_first_command_speed_acceleration_jerk_bounds_empty": 7,
+        "flatness_initial_speed_above_dynamic_cap": 6
+      },
+      "infeasible_after": {
+        "flatness_first_command_speed_acceleration_jerk_bounds_empty": 7,
+        "flatness_initial_speed_above_dynamic_cap": 6
+      },
+      "unchanged_cap": 60,
+      "same_terminal_contract": 60,
+      "target_speed_reduced": 0,
+      "unwind_enabled": 3,
+      "max_speed_reserve_mps": 0.0,
+      "max_release_weight": 0.29030173268548576,
+      "tightening_signal_count": 0,
+      "opening_signal_count": 3,
+      "independently_revalidated_before": 47,
+      "independently_revalidated_after": 47,
+      "paired_feasible": 47,
+      "first_command_steering_changed": 1,
+      "first_command_speed_changed": 1,
+      "reserve_paired_feasible": 0,
+      "reserve_first_speed_delta_mps": null,
+      "reserve_predicted_speed_after_0p6s_delta_mps": null,
+      "release_paired_feasible": 2,
+      "release_first_steer_magnitude_delta_rad": -0.0019015443768928275,
+      "release_predicted_steer_magnitude_after_0p6s_delta_rad": -0.0005680158453585937,
+      "old_timeouts": 0,
+      "new_timeouts": 0,
+      "measured_nominal_policy_before_ms": {
+        "count": 60,
+        "p50": 3.291514,
+        "p95": 4.858303,
+        "p99": 5.143455,
+        "maximum": 5.143455
+      },
+      "measured_nominal_policy_after_ms": {
+        "count": 60,
+        "p50": 3.391017,
+        "p95": 4.994166,
+        "p99": 5.106308,
+        "maximum": 5.106308
+      }
+    }
+  }
+}

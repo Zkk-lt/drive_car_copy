@@ -1,0 +1,40 @@
+schema_version: 1
+kind: sensor_calibration
+baseline_version: 695f1665feec86fd82e97f82c42fa85930c6bef5
+status: unverified
+evidence: [P0_driver_audit_requires_physical_calibration]
+# B-class calibration claims. These defaults enable raw capture, not inference.
+# NED speed is not proved independent of wheel input at firmware level.
+# Body heading must come from a valid quaternion in the SAME axes as velocity.
+values:
+  wheel_scale: 0.001       # m/s per mm/s
+  wheel_sign: 1.0
+  wheel_calibrated: false
+  steering_scale: 1.0     # rad per raw rad
+  steering_sign: 1.0
+  steering_calibrated: false
+  ground_scale: 1.0       # m/s per raw m/s
+  ground_lever_x: 0.0     # m, rear axle to sensor in body FLU
+  ground_lever_y: 0.0     # m
+  ground_calibrated: false
+  ground_frame_verified: false
+  ground_independent: false
+  ground_heading_verified: false
+  ground_lever_arm_verified: false
+  gyro_scale: 1.0         # rad/s per raw rad/s
+  gyro_sign: 1.0
+  accel_scale: 1.0        # m/s^2 per raw m/s^2
+  imu_frame_verified: false
+  stale_after: 0.25       # s
+  sync_tolerance: 0.08    # s
+  identify_yaw: true
+  identify_steering: true
+  source_timestamps_verified: false # source Header must be proved acquisition time
+  steering_delay_verified: false    # tau identification assumes known deadtime
+# Frame names alone do not establish a transform. A calibrated adapter must
+# provide world ENU velocity AND body FLU orientation before this contract is set.
+frame_contract:
+  ground_twist_convention: unverified
+  ground_world_frame: ''
+  ground_body_frame: ''
+  imu_body_frame: ''

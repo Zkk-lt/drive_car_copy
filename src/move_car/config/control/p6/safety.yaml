@@ -1,0 +1,231 @@
+baseline_version: 695f1665feec86fd82e97f82c42fa85930c6bef5
+evidence:
+- 'P5 source audit: uncalibrated model seed; not evidence of real-vehicle NMPC performance'
+- P6 isolated-research schema; original production and schema1 files untouched
+features:
+  adaptation_enabled: false
+  nmpc_enabled: false
+  terrain_estimation_enabled: false
+kind: safety
+parameters:
+  collision_stop_distance:
+    basis: current launch and solver clamp snapshot; changes require separate reviewed
+      safety revision
+    bounds:
+    - 0.5
+    - 0.5
+    calibration_status: unverified
+    class: A
+    source:
+      kind: source_audit
+      reference: P5 source default or immutable launch safety snapshot; no physical
+        calibration claim
+    uncertainty:
+      known: false
+      stddev: null
+    unit: m
+    valid_speed_range:
+    - 0.0
+    - 0.5
+    value: 0.5
+  follow_distance_min:
+    basis: current launch and solver clamp snapshot; changes require separate reviewed
+      safety revision
+    bounds:
+    - 0.5
+    - 0.5
+    calibration_status: unverified
+    class: A
+    source:
+      kind: source_audit
+      reference: P5 source default or immutable launch safety snapshot; no physical
+        calibration claim
+    uncertainty:
+      known: false
+      stddev: null
+    unit: m
+    valid_speed_range:
+    - 0.0
+    - 0.5
+    value: 0.5
+  max_accel:
+    basis: current launch and solver clamp snapshot; changes require separate reviewed
+      safety revision
+    bounds:
+    - 0.28
+    - 0.28
+    calibration_status: unverified
+    class: A
+    source: &id001
+      kind: source_audit
+      reference: P5 source default or immutable launch safety snapshot; no physical
+        calibration claim
+    uncertainty: &id002
+      known: false
+      stddev: null
+    unit: m/s^2
+    valid_speed_range: &id003
+    - 0.0
+    - 0.5
+    value: 0.28
+  max_decel:
+    basis: current launch and solver clamp snapshot; changes require separate reviewed
+      safety revision
+    bounds:
+    - 0.36
+    - 0.36
+    calibration_status: unverified
+    class: A
+    source:
+      kind: source_audit
+      reference: P5 source default or immutable launch safety snapshot; no physical
+        calibration claim
+    uncertainty:
+      known: false
+      stddev: null
+    unit: m/s^2
+    valid_speed_range:
+    - 0.0
+    - 0.5
+    value: 0.36
+  max_jerk:
+    basis: current launch and solver clamp snapshot; changes require separate reviewed
+      safety revision
+    bounds:
+    - 0.8
+    - 0.8
+    calibration_status: unverified
+    class: A
+    source:
+      kind: source_audit
+      reference: P5 source default or immutable launch safety snapshot; no physical
+        calibration claim
+    uncertainty:
+      known: false
+      stddev: null
+    unit: m/s^3
+    valid_speed_range:
+    - 0.0
+    - 0.5
+    value: 0.8
+  max_lateral_accel:
+    basis: Existing P5 Limits lateral_acceleration=.25 engineering seed; immutable
+      here, not estimated friction
+    bounds:
+    - 0.25
+    - 0.25
+    calibration_status: unverified
+    class: A
+    source: *id001
+    uncertainty: *id002
+    unit: m/s^2
+    valid_speed_range: *id003
+    value: 0.25
+  max_speed:
+    basis: current launch and solver clamp snapshot; changes require separate reviewed
+      safety revision
+    bounds:
+    - 0.5
+    - 0.5
+    calibration_status: unverified
+    class: A
+    source:
+      kind: source_audit
+      reference: P5 source default or immutable launch safety snapshot; no physical
+        calibration claim
+    uncertainty:
+      known: false
+      stddev: null
+    unit: m/s
+    valid_speed_range:
+    - 0.0
+    - 0.5
+    value: 0.5
+  max_steer:
+    basis: current launch and solver clamp snapshot; changes require separate reviewed
+      safety revision
+    bounds:
+    - 0.38
+    - 0.38
+    calibration_status: unverified
+    class: A
+    source:
+      kind: source_audit
+      reference: P5 source default or immutable launch safety snapshot; no physical
+        calibration claim
+    uncertainty:
+      known: false
+      stddev: null
+    unit: rad
+    valid_speed_range:
+    - 0.0
+    - 0.5
+    value: 0.38
+  max_steer_rate:
+    basis: current launch and solver clamp snapshot; changes require separate reviewed
+      safety revision
+    bounds:
+    - 1.0
+    - 1.0
+    calibration_status: unverified
+    class: A
+    source:
+      kind: source_audit
+      reference: P5 source default or immutable launch safety snapshot; no physical
+        calibration claim
+    uncertainty:
+      known: false
+      stddev: null
+    unit: rad/s
+    valid_speed_range:
+    - 0.0
+    - 0.5
+    value: 1.0
+  reference_hard_timeout:
+    basis: current launch and solver clamp snapshot; changes require separate reviewed
+      safety revision
+    bounds:
+    - 1.2
+    - 1.2
+    calibration_status: unverified
+    class: A
+    source:
+      kind: source_audit
+      reference: P5 source default or immutable launch safety snapshot; no physical
+        calibration claim
+    uncertainty:
+      known: false
+      stddev: null
+    unit: s
+    valid_speed_range:
+    - 0.0
+    - 0.5
+    value: 1.2
+  solver_max_steer:
+    basis: current launch and solver clamp snapshot; changes require separate reviewed
+      safety revision
+    bounds:
+    - 0.32
+    - 0.32
+    calibration_status: unverified
+    class: A
+    source:
+      kind: source_audit
+      reference: P5 source default or immutable launch safety snapshot; no physical
+        calibration claim
+    uncertainty:
+      known: false
+      stddev: null
+    unit: rad
+    valid_speed_range:
+    - 0.0
+    - 0.5
+    value: 0.32
+schema_version: 2
+status: research_unvalidated
+terrain: all
+valid_range:
+  deployment: isolated_simulation_only
+  direction: forward
+  max_speed_mps: 0.5
+version: p6-source-audit-v1

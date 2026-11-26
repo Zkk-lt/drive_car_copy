@@ -1,0 +1,76 @@
+{
+  "algorithm": "flat_nmpc_slqr",
+  "binary_sha": {
+    "control_pub": "728ba5c29046028a97ced924da97d9360d0208263c9481d029ca8edbc6131d50",
+    "p5_nmpc_worker_node": "4d9e0a08e2aaa3fb8d823b3e89ad6fe03bffe5f6d68896562ee16e7f60a46ab5"
+  },
+  "bounded_slqr_feedback": true,
+  "calibration_claim": false,
+  "candidate_count": 288,
+  "command_publishers": [
+    "/p7_smoke_controller"
+  ],
+  "commands": 376,
+  "commands_after_worker_exit": 82,
+  "data_origin": "synthetic_tool_test",
+  "decision_dimensions": [
+    8
+  ],
+  "flat_accuracy_refinement": false,
+  "flat_feasibility_recovery": false,
+  "fresh_local_feedback_candidates": 30,
+  "intervals_over_33_333_ms": 0,
+  "leased_nonzero_commands": 136,
+  "maximum_speed": 0.3988123814855141,
+  "nmpc_selected": 94,
+  "nonzero_local_feedback_candidates": 30,
+  "normal_nmpc_above_previous_point_three_two": 70,
+  "pass_test": true,
+  "passive_command_subscribers": [],
+  "physical_execution_claims": 0,
+  "private_master": true,
+  "private_master_uri": "http://127.0.0.1:60099",
+  "production_modified": false,
+  "publish_intervals_ms": {
+    "max": 28.947151,
+    "p50": 24.995496,
+    "p95": 25.450634,
+    "p99": 27.103194
+  },
+  "published_records": 376,
+  "real_hardware": false,
+  "real_labelled_requests": 377,
+  "real_vehicle_test": false,
+  "reference_hz": 30,
+  "reference_quality": "healthy",
+  "reference_revalidation": true,
+  "request_count": 377,
+  "run_id": "p7real_software_smoke_1795682371477755165",
+  "shadow_only": false,
+  "single_commit": true,
+  "smooth_steering_handoff": true,
+  "solver_attempts": 147,
+  "source_sha": "1e9c9f773a9cef2586c22cd8ca0ce271afa918ca26d5924d28290fec76d71845",
+  "steering_rate_continuity_weight": 0.05,
+  "straight_conditioned_valid_candidates": 102,
+  "straight_tracking_reference": true,
+  "strategy_matches_frozen_flags": true,
+  "test_mapping_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "unabridged_result_sha256": "ec23eabecb7eb15808200865ba8c91d316c38173cf308be41bff6f887a049f0d",
+  "valid_candidates": 102,
+  "wrong_frame_nmpc_accepted": 0,
+  "zero_speed_windows": {
+    "expired_lease": {
+      "maximum_speed": 0.0,
+      "n": 24
+    },
+    "initial_no_lease": {
+      "maximum_speed": 0.0,
+      "n": 42
+    },
+    "worker_exited_lease_expired": {
+      "maximum_speed": 0.0,
+      "n": 24
+    }
+  }
+}

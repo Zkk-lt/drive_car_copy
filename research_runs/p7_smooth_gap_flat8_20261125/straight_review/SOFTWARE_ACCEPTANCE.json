@@ -1,0 +1,44 @@
+{
+  "binary_sha": {
+    "control_pub": "728ba5c29046028a97ced924da97d9360d0208263c9481d029ca8edbc6131d50",
+    "p5_nmpc_worker_node": "4d9e0a08e2aaa3fb8d823b3e89ad6fe03bffe5f6d68896562ee16e7f60a46ab5"
+  },
+  "config_sha256": {
+    "adaptation.yaml": "f86d062539d40e2f7f4ce44b67a0a4761ccf85fe5b9ddc394bc7ab7639623fe1",
+    "base.yaml": "0f94651b09526e5f1e79501cdce3120a21fec32854d867ae3186adfb5e52961d",
+    "p7_strategy.yaml": "81b93295ac940196197a756c5a4f3214d3c10b28c356b2feedc45c6f8da92d60",
+    "reconstructor.yaml": "d778efd6773e326107174f7e092943c48f133c8b05d724e79faf232485f83ba4",
+    "s8_test_baseline.yaml": "a117706e3c712d38d4b108c0114e4f91eb74b40c289b94eb8bb638af0581fc77",
+    "safety.yaml": "5dfd273dd2362921879d9988ddbd556f0396804f501d77e54f112fd0c2b0d9bb",
+    "terrain/asphalt.yaml": "6922205947c705960188aad95cca88027a2cfed0afcb829e140c61795f73e14f",
+    "terrain/grass_bumpy.yaml": "bf167f261e67c75dd3939ceb45e9bdbf2a2ba62794597ad6fbc97738669f73d7",
+    "terrain/smooth.yaml": "39a0ae2a51d8e2239437994c3108fdc6fa8cccac9c14661a2c56ddbb723a23e6",
+    "terrain/unknown.yaml": "32622728010d39453d61766b727ff6b329110a65b8f411ec3695221a73ed5474"
+  },
+  "maximum_requested_speed_mps": 0.4,
+  "operator_selected_for": "smooth supervised trial",
+  "physical_tracking_validated": false,
+  "reconstructor_sha256": "ce727c41a5f0ca323fec903d3bfa0cf3e655496307e4a7471baf9f9c213809c6",
+  "results": {
+    "noisy_straight_closed_loop.csv": {
+      "path": "/home/ubuntu/drive_car_copy/research_runs/p7_smooth_gap_flat8_20261125/straight_review/noisy_straight_closed_loop.csv",
+      "sha256": "0f695145a034dc701e9b80c55bb88f1fb82805ebadfc0ad0eb5652b4d67edbe7"
+    },
+    "private_ros.json": {
+      "path": "/home/ubuntu/drive_car_copy/research_runs/p7_smooth_gap_flat8_20261125/straight_review/private_ros.json",
+      "sha256": "e491e8b7ac128cbd43cace04f8a44e716892ead0b7e992d8ee88cd50d9d7e910"
+    },
+    "real_run_summary.json": {
+      "path": "/home/ubuntu/drive_car_copy/research_runs/p7_smooth_gap_flat8_20261125/straight_review/real_run_summary.json",
+      "sha256": "704913ef935a1adb067601c0fd6b381941be640136bf723d41fe7fe9052ae971"
+    }
+  },
+  "source_runs": [
+    "p7real_20261126T161218_293e5579",
+    "p7real_20261126T161701_95f66685"
+  ],
+  "straight_reference_header_sha256": "adaea6aa63b462c2e8d2ae3116ceb6a2dc4c0920a31e9184c415465ee3daf802",
+  "strategy_sha256": "81b93295ac940196197a756c5a4f3214d3c10b28c356b2feedc45c6f8da92d60",
+  "supervised_software_qualified": true,
+  "validated_deployment": false
+}

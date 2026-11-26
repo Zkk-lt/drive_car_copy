@@ -1,0 +1,43 @@
+{
+  "binary_sha": {
+    "control_pub": "728ba5c29046028a97ced924da97d9360d0208263c9481d029ca8edbc6131d50",
+    "p5_nmpc_worker_node": "c00abf524cf65d70e9d95faea9611fc8ece25f84c68b7b4b9a319e3b2bd2031a"
+  },
+  "config_sha256": {
+    "adaptation.yaml": "f86d062539d40e2f7f4ce44b67a0a4761ccf85fe5b9ddc394bc7ab7639623fe1",
+    "base.yaml": "0f94651b09526e5f1e79501cdce3120a21fec32854d867ae3186adfb5e52961d",
+    "p7_strategy.yaml": "c46c14db305711e4204c12cca6e4121f69429e98a83bdd5be943c0354ab6a87c",
+    "reconstructor.yaml": "d778efd6773e326107174f7e092943c48f133c8b05d724e79faf232485f83ba4",
+    "s8_test_baseline.yaml": "a117706e3c712d38d4b108c0114e4f91eb74b40c289b94eb8bb638af0581fc77",
+    "safety.yaml": "5dfd273dd2362921879d9988ddbd556f0396804f501d77e54f112fd0c2b0d9bb",
+    "terrain/asphalt.yaml": "6922205947c705960188aad95cca88027a2cfed0afcb829e140c61795f73e14f",
+    "terrain/grass_bumpy.yaml": "bf167f261e67c75dd3939ceb45e9bdbf2a2ba62794597ad6fbc97738669f73d7",
+    "terrain/smooth.yaml": "39a0ae2a51d8e2239437994c3108fdc6fa8cccac9c14661a2c56ddbb723a23e6",
+    "terrain/unknown.yaml": "32622728010d39453d61766b727ff6b329110a65b8f411ec3695221a73ed5474"
+  },
+  "maximum_requested_speed_mps": 0.4,
+  "operator_selected_for": "smooth supervised trial",
+  "physical_tracking_validated": false,
+  "reconstructor_sha256": "ce727c41a5f0ca323fec903d3bfa0cf3e655496307e4a7471baf9f9c213809c6",
+  "results": {
+    "damping_summary.csv": {
+      "path": "/home/ubuntu/drive_car_copy/research_runs/p7_smooth_gap_flat8_20261125/straight_damped_review/damping_summary.csv",
+      "sha256": "757f0a5f5af9b310060b295ffd0185683a8880fb84d814c9b240e2f6cbf2366d"
+    },
+    "private_ros.json": {
+      "path": "/home/ubuntu/drive_car_copy/research_runs/p7_smooth_gap_flat8_20261125/straight_damped_review/private_ros.json",
+      "sha256": "b8553cdd85a588a7c94aa102dd4ffd850505e62b2d1f5bd79dd69823fc035a77"
+    },
+    "real_run_summary.json": {
+      "path": "/home/ubuntu/drive_car_copy/research_runs/p7_smooth_gap_flat8_20261125/straight_damped_review/real_run_summary.json",
+      "sha256": "69853e6aa1915e29a333bd9bf0d1e96ba47f6cc2f95b3b0e9ab50c47b750f4cf"
+    }
+  },
+  "source_runs": [
+    "p7real_20261126T164413_aad90bfa"
+  ],
+  "straight_yaw_damping_weight": 2.0,
+  "strategy_sha256": "c46c14db305711e4204c12cca6e4121f69429e98a83bdd5be943c0354ab6a87c",
+  "supervised_software_qualified": true,
+  "validated_deployment": false
+}

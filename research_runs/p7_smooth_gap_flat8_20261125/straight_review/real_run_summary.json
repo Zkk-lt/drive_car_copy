@@ -1,0 +1,341 @@
+{
+  "geometry_probe_sha256": "fbeb8a28ad5d564c000874078f435469e865084c9bce591f2002c54aea6126ac",
+  "method": {
+    "moving": "published SI command & CAN speed proxy > 0.18 m/s, request valid reference",
+    "near_line": "request 0.40-1.40 m chord error < 0.018 m and endpoint yaw difference < 0.12 rad; 0.30-1.30 m median absolute tangent derivative < 0.15 rad/m",
+    "clearly_curved": "request chord error > 0.04 m or endpoint yaw difference > 0.35 rad",
+    "geometry_probe": "matches valid candidate archived state/model to the same request; tests geometry applicability and unchanged schedule only, not physical closed loop",
+    "reversal": "consecutive opposite command angular increments with each angular rate beyond 0.20 rad/s"
+  },
+  "runs": [
+    {
+      "run_id": "p7real_20261126T161218_293e5579",
+      "ground_truth": false,
+      "recorder_application_queue_drops": 0,
+      "recorded_committed_commands": 2702,
+      "recorded_nmpc_selected": 694,
+      "recorder_can_imu_backwards_aligned": true,
+      "straight_apparent_command_response_receipt_domain": {
+        "can_delta": {
+          "apparent_lag_s": 0.45,
+          "correlation": 0.8946760020140591
+        },
+        "imu_z": {
+          "apparent_lag_s": 0.45,
+          "correlation": 0.9312604962070072
+        }
+      },
+      "whole_run_timing_ms": {
+        "published_interval_max": 31.286122,
+        "control_callback_max": 7.133795999999999,
+        "reconstructor_compute_p95": 4.800112,
+        "reconstructor_compute_max": 10.749074
+      },
+      "moving_all": {
+        "cycles": 1258,
+        "nmpc_selected": 642,
+        "tracking_abs_error_p95_m": 0.04408334999999989,
+        "steer_command_abs_p95_rad": 0.13983206568987785,
+        "can_steer_abs_p95_rad": 0.10821041362364843,
+        "imu_yaw_rate_abs_p95_rad_s": 0.05796724185347557,
+        "command_steer_rate_rms_rad_s": 0.4497252419283098,
+        "candidate_slqr_abs_correction_p95_rad": 0.0011896329513764064,
+        "selected_p95_solve_ms": 4.650154949999999,
+        "selected_max_solve_ms": 5.939309,
+        "publish_p95_ms": 25.61388065,
+        "max_publish_ms": 29.13139,
+        "lookahead_chord_median_deviation_m": 0.015314629279338385,
+        "observed_can_yaw_kinematic_correlation": 0.9428778944206838,
+        "same_owner_nmpc_cycles": 594,
+        "same_owner_nmpc_strong_rate_reversals": 48,
+        "switch_cycles": 95,
+        "strong_rate_reversals_on_switch": 19,
+        "nonswitch_cycles": 1163,
+        "strong_rate_reversals_without_switch": 138,
+        "legacy_straight_lock_cycles": 1140,
+        "tracking_reference_class": {
+          "connector_only_low_confidence": 941,
+          "degraded": 317
+        },
+        "geometry_probe": {
+          "valid_probe_cycles": 700,
+          "terminal_approach_cycles": 0,
+          "nonzero_blend_cycles": 315,
+          "blend_over_half_cycles": 158,
+          "peak_position_change_m": 0.013175667265,
+          "peak_heading_change_rad": 0.0608818463738
+        }
+      },
+      "near_line": {
+        "cycles": 177,
+        "nmpc_selected": 148,
+        "tracking_abs_error_p95_m": 0.02395659999999999,
+        "steer_command_abs_p95_rad": 0.11018108474704565,
+        "can_steer_abs_p95_rad": 0.08168140899333462,
+        "imu_yaw_rate_abs_p95_rad_s": 0.05157565698027611,
+        "command_steer_rate_rms_rad_s": 0.330610884560646,
+        "candidate_slqr_abs_correction_p95_rad": 0.0011453916276834353,
+        "selected_p95_solve_ms": 4.6940653,
+        "selected_max_solve_ms": 5.623141,
+        "publish_p95_ms": 25.7293028,
+        "max_publish_ms": 28.269754,
+        "lookahead_chord_median_deviation_m": 0.009319381787287914,
+        "observed_can_yaw_kinematic_correlation": 0.9425912118914421,
+        "same_owner_nmpc_cycles": 137,
+        "same_owner_nmpc_strong_rate_reversals": 8,
+        "switch_cycles": 15,
+        "strong_rate_reversals_on_switch": 1,
+        "nonswitch_cycles": 162,
+        "strong_rate_reversals_without_switch": 10,
+        "legacy_straight_lock_cycles": 177,
+        "tracking_reference_class": {
+          "connector_only_low_confidence": 175,
+          "degraded": 2
+        },
+        "geometry_probe": {
+          "valid_probe_cycles": 160,
+          "terminal_approach_cycles": 0,
+          "nonzero_blend_cycles": 136,
+          "blend_over_half_cycles": 94,
+          "peak_position_change_m": 0.0129826365452,
+          "peak_heading_change_rad": 0.0608818463738
+        }
+      },
+      "clearly_curved": {
+        "cycles": 39,
+        "nmpc_selected": 14,
+        "tracking_abs_error_p95_m": 0.06981860000000001,
+        "steer_command_abs_p95_rad": 0.19758359625925903,
+        "can_steer_abs_p95_rad": 0.11641346110802178,
+        "imu_yaw_rate_abs_p95_rad_s": 0.06329356133937836,
+        "command_steer_rate_rms_rad_s": 0.46080942076993087,
+        "candidate_slqr_abs_correction_p95_rad": 0.0006685527298298518,
+        "selected_p95_solve_ms": 3.7647706999999997,
+        "selected_max_solve_ms": 4.12729,
+        "publish_p95_ms": 25.498654300000002,
+        "max_publish_ms": 26.108504999999997,
+        "lookahead_chord_median_deviation_m": 0.042685144582488795,
+        "observed_can_yaw_kinematic_correlation": 0.9725829898087742,
+        "same_owner_nmpc_cycles": 13,
+        "same_owner_nmpc_strong_rate_reversals": 0,
+        "switch_cycles": 1,
+        "strong_rate_reversals_on_switch": 0,
+        "nonswitch_cycles": 38,
+        "strong_rate_reversals_without_switch": 1,
+        "legacy_straight_lock_cycles": 21,
+        "tracking_reference_class": {
+          "connector_only_low_confidence": 39
+        },
+        "geometry_probe": {
+          "valid_probe_cycles": 16,
+          "terminal_approach_cycles": 0,
+          "nonzero_blend_cycles": 0,
+          "blend_over_half_cycles": 0,
+          "peak_position_change_m": 0.0,
+          "peak_heading_change_rad": 0.0
+        }
+      },
+      "other": {
+        "cycles": 1042,
+        "nmpc_selected": 480,
+        "tracking_abs_error_p95_m": 0.043865,
+        "steer_command_abs_p95_rad": 0.13967746512463727,
+        "can_steer_abs_p95_rad": 0.10821041362364843,
+        "imu_yaw_rate_abs_p95_rad_s": 0.060071140900254213,
+        "command_steer_rate_rms_rad_s": 0.4665446726705933,
+        "candidate_slqr_abs_correction_p95_rad": 0.001195864242641696,
+        "selected_p95_solve_ms": 4.6328194499999995,
+        "selected_max_solve_ms": 5.939309,
+        "publish_p95_ms": 25.5651674,
+        "max_publish_ms": 29.13139,
+        "lookahead_chord_median_deviation_m": 0.016083042639435947,
+        "observed_can_yaw_kinematic_correlation": 0.9407080598476381,
+        "same_owner_nmpc_cycles": 444,
+        "same_owner_nmpc_strong_rate_reversals": 40,
+        "switch_cycles": 79,
+        "strong_rate_reversals_on_switch": 18,
+        "nonswitch_cycles": 963,
+        "strong_rate_reversals_without_switch": 127,
+        "legacy_straight_lock_cycles": 942,
+        "tracking_reference_class": {
+          "connector_only_low_confidence": 727,
+          "degraded": 315
+        },
+        "geometry_probe": {
+          "valid_probe_cycles": 524,
+          "terminal_approach_cycles": 0,
+          "nonzero_blend_cycles": 179,
+          "blend_over_half_cycles": 64,
+          "peak_position_change_m": 0.013175667265,
+          "peak_heading_change_rad": 0.0598555930577
+        }
+      }
+    },
+    {
+      "run_id": "p7real_20261126T161701_95f66685",
+      "ground_truth": false,
+      "recorder_application_queue_drops": 0,
+      "recorded_committed_commands": 6647,
+      "recorded_nmpc_selected": 2919,
+      "recorder_can_imu_backwards_aligned": true,
+      "straight_apparent_command_response_receipt_domain": {
+        "can_delta": {
+          "apparent_lag_s": 0.525,
+          "correlation": 0.9533050593708927
+        },
+        "imu_z": {
+          "apparent_lag_s": 0.47500000000000003,
+          "correlation": 0.9438859751350744
+        }
+      },
+      "whole_run_timing_ms": {
+        "published_interval_max": 31.823141999999997,
+        "control_callback_max": 8.49982,
+        "reconstructor_compute_p95": 13.385385799999996,
+        "reconstructor_compute_max": 31.855309
+      },
+      "moving_all": {
+        "cycles": 5225,
+        "nmpc_selected": 2584,
+        "tracking_abs_error_p95_m": 0.056513,
+        "steer_command_abs_p95_rad": 0.245831714633201,
+        "can_steer_abs_p95_rad": 0.23945917337362205,
+        "imu_yaw_rate_abs_p95_rad_s": 0.1295192837715149,
+        "command_steer_rate_rms_rad_s": 0.40031084332751543,
+        "candidate_slqr_abs_correction_p95_rad": 5.3931685147617524e-05,
+        "selected_p95_solve_ms": 4.9532388,
+        "selected_max_solve_ms": 6.647129,
+        "publish_p95_ms": 25.616925,
+        "max_publish_ms": 31.823141999999997,
+        "lookahead_chord_median_deviation_m": 0.024307841896990392,
+        "observed_can_yaw_kinematic_correlation": 0.9587760982710205,
+        "same_owner_nmpc_cycles": 2271,
+        "same_owner_nmpc_strong_rate_reversals": 177,
+        "switch_cycles": 619,
+        "strong_rate_reversals_on_switch": 121,
+        "nonswitch_cycles": 4606,
+        "strong_rate_reversals_without_switch": 562,
+        "legacy_straight_lock_cycles": 2548,
+        "tracking_reference_class": {
+          "connector_only_low_confidence": 4316,
+          "degraded": 908,
+          "unknown": 1
+        },
+        "geometry_probe": {
+          "valid_probe_cycles": 2876,
+          "terminal_approach_cycles": 0,
+          "nonzero_blend_cycles": 815,
+          "blend_over_half_cycles": 521,
+          "peak_position_change_m": 0.013445384809,
+          "peak_heading_change_rad": 0.0712757512115
+        }
+      },
+      "near_line": {
+        "cycles": 793,
+        "nmpc_selected": 536,
+        "tracking_abs_error_p95_m": 0.03313079999999999,
+        "steer_command_abs_p95_rad": 0.20900706984417458,
+        "can_steer_abs_p95_rad": 0.23230332344044527,
+        "imu_yaw_rate_abs_p95_rad_s": 0.1238733872771263,
+        "command_steer_rate_rms_rad_s": 0.348698601801765,
+        "candidate_slqr_abs_correction_p95_rad": 3.7506255068495937e-05,
+        "selected_p95_solve_ms": 4.8840725,
+        "selected_max_solve_ms": 5.733153000000001,
+        "publish_p95_ms": 25.609784199999996,
+        "max_publish_ms": 31.823141999999997,
+        "lookahead_chord_median_deviation_m": 0.007618700880978728,
+        "observed_can_yaw_kinematic_correlation": 0.9412901098250809,
+        "same_owner_nmpc_cycles": 481,
+        "same_owner_nmpc_strong_rate_reversals": 49,
+        "switch_cycles": 102,
+        "strong_rate_reversals_on_switch": 18,
+        "nonswitch_cycles": 691,
+        "strong_rate_reversals_without_switch": 86,
+        "legacy_straight_lock_cycles": 534,
+        "tracking_reference_class": {
+          "connector_only_low_confidence": 692,
+          "degraded": 101
+        },
+        "geometry_probe": {
+          "valid_probe_cycles": 587,
+          "terminal_approach_cycles": 0,
+          "nonzero_blend_cycles": 551,
+          "blend_over_half_cycles": 418,
+          "peak_position_change_m": 0.013445384809,
+          "peak_heading_change_rad": 0.0712757512115
+        }
+      },
+      "clearly_curved": {
+        "cycles": 943,
+        "nmpc_selected": 470,
+        "tracking_abs_error_p95_m": 0.059625,
+        "steer_command_abs_p95_rad": 0.2460516435903129,
+        "can_steer_abs_p95_rad": 0.23614304779483275,
+        "imu_yaw_rate_abs_p95_rad_s": 0.13212918490171432,
+        "command_steer_rate_rms_rad_s": 0.37771189379045383,
+        "candidate_slqr_abs_correction_p95_rad": 5.9378551483694966e-05,
+        "selected_p95_solve_ms": 5.0361112,
+        "selected_max_solve_ms": 6.339447,
+        "publish_p95_ms": 25.5850249,
+        "max_publish_ms": 29.795844,
+        "lookahead_chord_median_deviation_m": 0.047140931842798335,
+        "observed_can_yaw_kinematic_correlation": 0.9767863122634598,
+        "same_owner_nmpc_cycles": 400,
+        "same_owner_nmpc_strong_rate_reversals": 15,
+        "switch_cycles": 136,
+        "strong_rate_reversals_on_switch": 27,
+        "nonswitch_cycles": 807,
+        "strong_rate_reversals_without_switch": 87,
+        "legacy_straight_lock_cycles": 275,
+        "tracking_reference_class": {
+          "connector_only_low_confidence": 778,
+          "degraded": 165
+        },
+        "geometry_probe": {
+          "valid_probe_cycles": 535,
+          "terminal_approach_cycles": 0,
+          "nonzero_blend_cycles": 0,
+          "blend_over_half_cycles": 0,
+          "peak_position_change_m": 0.0,
+          "peak_heading_change_rad": 0.0
+        }
+      },
+      "other": {
+        "cycles": 3489,
+        "nmpc_selected": 1578,
+        "tracking_abs_error_p95_m": 0.056744,
+        "steer_command_abs_p95_rad": 0.254158731653765,
+        "can_steer_abs_p95_rad": 0.24155356847601522,
+        "imu_yaw_rate_abs_p95_rad_s": 0.1295192837715149,
+        "command_steer_rate_rms_rad_s": 0.416878110637641,
+        "candidate_slqr_abs_correction_p95_rad": 5.617414912603611e-05,
+        "selected_p95_solve_ms": 4.9398642,
+        "selected_max_solve_ms": 6.647129,
+        "publish_p95_ms": 25.627834999999997,
+        "max_publish_ms": 31.179188999999997,
+        "lookahead_chord_median_deviation_m": 0.02346124130198439,
+        "observed_can_yaw_kinematic_correlation": 0.9569106881571873,
+        "same_owner_nmpc_cycles": 1390,
+        "same_owner_nmpc_strong_rate_reversals": 113,
+        "switch_cycles": 381,
+        "strong_rate_reversals_on_switch": 76,
+        "nonswitch_cycles": 3108,
+        "strong_rate_reversals_without_switch": 389,
+        "legacy_straight_lock_cycles": 1739,
+        "tracking_reference_class": {
+          "connector_only_low_confidence": 2846,
+          "degraded": 642,
+          "unknown": 1
+        },
+        "geometry_probe": {
+          "valid_probe_cycles": 1754,
+          "terminal_approach_cycles": 0,
+          "nonzero_blend_cycles": 264,
+          "blend_over_half_cycles": 103,
+          "peak_position_change_m": 0.0133052974821,
+          "peak_heading_change_rad": 0.0665090922452
+        }
+      }
+    }
+  ]
+}

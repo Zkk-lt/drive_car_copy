@@ -1,0 +1,23 @@
+<launch>
+  <!-- Only a passive recorder. Does not launch either controller or any hardware. -->
+  <arg name="run_id"/>
+  <arg name="terrain" default="unknown"/>
+  <arg name="workspace_root" default="/home/ubuntu/drive_car_copy"/>
+  <arg name="output_dir" default="/home/ubuntu/drive_car_copy/research_runs"/>
+  <arg name="config_dir" default="$(find move_car)/config/control"/>
+  <arg name="route" default="unspecified"/>
+  <arg name="conditions" default="unspecified"/>
+  <arg name="target_speed_mps" default="0.0"/>
+  <arg name="record_clouds" default="false"/>
+  <param name="/control_research/run_id" value="$(arg run_id)" type="str"/>
+  <node pkg="move_car" type="record_control_run.py" name="control_run_recorder" output="screen" required="true">
+    <param name="workspace_root" value="$(arg workspace_root)"/>
+    <param name="config_dir" value="$(arg config_dir)"/>
+    <param name="output_dir" value="$(arg output_dir)"/>
+    <param name="terrain" value="$(arg terrain)"/>
+    <param name="route" value="$(arg route)"/>
+    <param name="conditions" value="$(arg conditions)"/>
+    <param name="target_speed_mps" value="$(arg target_speed_mps)"/>
+    <param name="record_clouds" value="$(arg record_clouds)"/>
+  </node>
+</launch>

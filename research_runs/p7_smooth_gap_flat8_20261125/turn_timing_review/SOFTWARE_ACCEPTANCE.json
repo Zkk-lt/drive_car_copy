@@ -1,0 +1,48 @@
+{
+  "binary_sha": {
+    "control_pub": "728ba5c29046028a97ced924da97d9360d0208263c9481d029ca8edbc6131d50",
+    "p5_nmpc_worker_node": "6e1c531edf9e1c2f724a5d1109b1d366961b916532fe63e982bda4c187f2450e"
+  },
+  "config_sha256": {
+    "adaptation.yaml": "f86d062539d40e2f7f4ce44b67a0a4761ccf85fe5b9ddc394bc7ab7639623fe1",
+    "base.yaml": "0f94651b09526e5f1e79501cdce3120a21fec32854d867ae3186adfb5e52961d",
+    "p7_strategy.yaml": "0486a200fc30044c1f73aa6bb4740750d20f68fd853ee95246be1311f8678b7f",
+    "reconstructor.yaml": "d778efd6773e326107174f7e092943c48f133c8b05d724e79faf232485f83ba4",
+    "s8_test_baseline.yaml": "a117706e3c712d38d4b108c0114e4f91eb74b40c289b94eb8bb638af0581fc77",
+    "safety.yaml": "5dfd273dd2362921879d9988ddbd556f0396804f501d77e54f112fd0c2b0d9bb",
+    "terrain/asphalt.yaml": "6922205947c705960188aad95cca88027a2cfed0afcb829e140c61795f73e14f",
+    "terrain/grass_bumpy.yaml": "bf167f261e67c75dd3939ceb45e9bdbf2a2ba62794597ad6fbc97738669f73d7",
+    "terrain/smooth.yaml": "39a0ae2a51d8e2239437994c3108fdc6fa8cccac9c14661a2c56ddbb723a23e6",
+    "terrain/unknown.yaml": "32622728010d39453d61766b727ff6b329110a65b8f411ec3695221a73ed5474"
+  },
+  "maximum_requested_speed_mps": 0.4,
+  "physical_tracking_validated": false,
+  "qualified_scope": "operator supervised smooth development trial",
+  "reconstructor_sha256": "ce727c41a5f0ca323fec903d3bfa0cf3e655496307e4a7471baf9f9c213809c6",
+  "results": {
+    "bend_phase_165921.json": {
+      "path": "/home/ubuntu/drive_car_copy/research_runs/p7_smooth_gap_flat8_20261125/right_bend_review/bend_phase_165921.json",
+      "sha256": "ff5002cb8d46fd39eb6c397b1a9b875e66caa0ecc2ba339fa889eb941d2e8de5"
+    },
+    "private_ros.json": {
+      "path": "/home/ubuntu/drive_car_copy/research_runs/p7_smooth_gap_flat8_20261125/turn_timing_review/private_ros.json",
+      "sha256": "e4bbe5b5436f9a3b54e68da834103c418b1957b7ca7d1341ec7d6a42209d5736"
+    },
+    "summary.json": {
+      "path": "/home/ubuntu/drive_car_copy/research_runs/p7_smooth_gap_flat8_20261125/turn_timing_review/real_frozen_pairs_025/summary.json",
+      "sha256": "a0b23d08c7db6521662b2ee3210289cb4d4b92c607ac0138dfa754c85749424f"
+    },
+    "synthetic_compound_reserve_025_summary.json": {
+      "path": "/home/ubuntu/drive_car_copy/research_runs/p7_smooth_gap_flat8_20261125/turn_timing_review/synthetic_compound_reserve_025_summary.json",
+      "sha256": "4bdcf377a3e13193d20e0002fb5099199b88930419066856e8ea6e8aeffd0132"
+    }
+  },
+  "source_runs": [
+    "p7real_20261126T165921_e62f8981"
+  ],
+  "strategy_sha256": "0486a200fc30044c1f73aa6bb4740750d20f68fd853ee95246be1311f8678b7f",
+  "supervised_software_qualified": true,
+  "turn_release_weight": 0.0,
+  "turn_speed_reserve_mps": 0.025,
+  "validated_deployment": false
+}

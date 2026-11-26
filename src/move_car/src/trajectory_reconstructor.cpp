@@ -1,3 +1,4 @@
+#include <move_car/ReferenceInfo.h>
 /*
 改进版：响应更快
 */
@@ -9,6 +10,7 @@
 #include <geometry_msgs/TransformStamped.h>
 #include <geometry_msgs/Twist.h>
 #include <move_car/car_parameter.h>
+#include "control/qualified_steering_sample.h"
 #include <nav_msgs/Odometry.h>
 #include <nav_msgs/Path.h>
 #include <sensor_msgs/Imu.h>
@@ -116,6 +118,9 @@ using EgoPose2D = EgoState;
 struct HistoryPoint2D {
   ros::Time stamp;
   ros::Time observation_support_start;
+  ros::Time preceding_observation_start;
+  ros::Time preceding_observation_end;
+  bool observation_start_supports_position = false;
   uint64_t source_id = 0;
   uint64_t source_end_id = 0;
   double source_fraction = 0.0;
@@ -1717,6 +1722,7 @@ class LeadTrailTracker {
  public:
   struct Config {
     double lost_timeout = 0.60;
+    bool reacquisition_segment_recovery = false;
     double heading_blend_alpha = 0.20;
     double heading_from_velocity_speed_gate = 0.25;
     double innovation_base_gate = 0.10;
@@ -2139,11 +2145,28 @@ class LeadTrailTracker {
 
     if (nodes_.empty() || (obs.stamp - nodes_.back().stamp).toSec() > cfg_.lost_timeout) {
       clearStateUnlocked();
+      preceding_observation_start_ = last_accepted_observation_start_;
+      preceding_observation_end_ = last_accepted_observation_;
       static_anchor_x_ = obs.world_x;
       static_anchor_y_ = obs.world_y;
     }
     node.observation_support_start = nodes_.empty() ? obs.stamp :
         nodes_.back().observation_support_start;
+    if (cfg_.reacquisition_segment_recovery && !confirmed_trail_world_.empty() &&
+        node.observation_support_start > confirmed_trail_world_.back().stamp) {
+      // Only accepted observations in the new epoch can attest to its start.
+      reacquisition_start_.observe(node.observation_support_start, obs.stamp,
+          obs.world_x, obs.world_y, std::isfinite(ego_yaw_sigma) &&
+          ego_yaw_sigma <= cfg_.max_ego_yaw_sigma_for_confirm, cfg_.lost_timeout);
+    }
+    if (cfg_.reacquisition_segment_recovery && obs.stamp > last_accepted_observation_) {
+      // This clock survives estimator-window resets, including a loss
+      // detected by the timer. Only accepted, pose-qualified frames set it.
+      last_accepted_observation_ = std::isfinite(ego_yaw_sigma) &&
+          ego_yaw_sigma <= cfg_.max_ego_yaw_sigma_for_confirm ? obs.stamp : ros::Time();
+      last_accepted_observation_start_=last_accepted_observation_.isZero() ?
+          ros::Time() : node.observation_support_start;
+    }
 
     updateMeasurementHypothesisUnlocked(&node);
 
@@ -2720,6 +2743,9 @@ class LeadTrailTracker {
   }
 
   void clearStateUnlocked() {
+    reacquisition_start_ = ReacquisitionStartSupport();
+    preceding_observation_start_ = ros::Time();
+    preceding_observation_end_ = ros::Time();
     nodes_.clear();
     tail_buffer_world_.clear();
     track_ = LeadState2D();
@@ -3468,6 +3494,59 @@ class LeadTrailTracker {
     }
   }
 
+  bool reacquiredSegmentTangentUnlocked(const HistoryPoint2D& candidate,
+                                        double* heading) const {
+    if (!cfg_.reacquisition_segment_recovery || confirmed_trail_world_.empty() ||
+        candidate.observation_support_start.isZero() || candidate.stamp.isZero()) return false;
+    const auto& previous = confirmed_trail_world_.back();
+    // This is a real accepted-observation boundary, not an elapsed-time reset.
+    // Keep the old segment and its gap; downstream association/geometry must
+    // still validate the transition before an executable reference is emitted.
+    if (candidate.observation_support_start <= previous.stamp ||
+        candidate.stamp <= previous.stamp) return false;
+    struct Sample { double t, x, y; };
+    std::vector<Sample> samples;
+    double mt = 0., mx = 0., my = 0.;
+    ros::Time first, last;
+    for (const auto& node : nodes_) {
+      if (node.stamp > candidate.stamp) break; // no future observation in tangent
+      if (node.observation_support_start != candidate.observation_support_start ||
+          node.stamp < candidate.observation_support_start) continue;
+      if (!node.has_measurement || !std::isfinite(node.ego.sigma_yaw) ||
+          node.ego.sigma_yaw > cfg_.max_ego_yaw_sigma_for_confirm || (!last.isZero() &&
+          (node.stamp <= last || (node.stamp-last).toSec() > cfg_.lost_timeout))) return false;
+      double x, y;
+      transformLocalToWorld(node.ego, node.z_rel_x + 0.60, node.z_rel_y, &x, &y);
+      if (!std::isfinite(x) || !std::isfinite(y)) return false;
+      if (first.isZero()) first = node.stamp;
+      const double t = (node.stamp-first).toSec();
+      samples.push_back({t,x,y});mt += t;mx += x;my += y;last = node.stamp;
+    }
+    // Same six-frame / 0.20s evidence floor used by the existing coherent
+    // measurement reacquisition, not a newly fitted physical response time.
+    if (samples.size() < 6 || last != candidate.stamp || (last-first).toSec() < 0.20) return false;
+    mt /= samples.size();mx /= samples.size();my /= samples.size();
+    double variance=0., vx=0., vy=0.;
+    for (const auto& z:samples) {const double t=z.t-mt;variance+=t*t;vx+=t*(z.x-mx);vy+=t*(z.y-my);}
+    if (variance < 1e-8) return false;
+    vx /= variance;vy /= variance;
+    const double speed=hypot2(vx,vy), duration=(last-first).toSec();
+    if (speed < cfg_.lead_static_speed_gate || speed > cfg_.lead_tail_max_speed) return false;
+    double residual2=0., largest=0.;
+    for (const auto& z:samples) {
+      const double error=pointDistance(z.x,z.y,mx+vx*(z.t-mt),my+vy*(z.t-mt));
+      residual2+=error*error;largest=std::max(largest,error);
+    }
+    const double noise=std::max(0.01,std::min(cfg_.measurement_along_sigma,cfg_.measurement_cross_sigma));
+    const double rms=std::sqrt(residual2/samples.size());
+    if (rms>noise || largest>2.*noise ||
+        speed*duration<std::max(cfg_.fixed_frame_heading_min_distance,3.*rms) ||
+        pointDistance(candidate.x,candidate.y,mx+vx*(duration-mt),my+vy*(duration-mt))>2.*noise)
+      return false;
+    if (heading) *heading=std::atan2(vy,vx);
+    return true;
+  }
+
   void commitConfirmedTrailPointUnlocked() {
     resetFixedFrameAppendDebugUnlocked();
     confirmation_observed_progress_=0.;
@@ -3519,7 +3598,10 @@ class LeadTrailTracker {
     }
 
     HistoryPoint2D candidate = tail_buffer_world_[candidate_index];
-    stabilizeHistoryCandidateUnlocked(&candidate);
+    double reacquired_heading=0.;
+    const bool reacquired_segment=reacquiredSegmentTangentUnlocked(candidate,&reacquired_heading);
+    if (reacquired_segment) candidate.heading=reacquired_heading;
+    else stabilizeHistoryCandidateUnlocked(&candidate);
     if (candidate.stamp.isValid() &&
         nodes_.back().ego.sigma_yaw > cfg_.max_ego_yaw_sigma_for_confirm) {
       last_history_action_ = "history_ego_yaw_uncertain_hold";
@@ -3531,8 +3613,15 @@ class LeadTrailTracker {
       last_fixed_frame_append_valid_ = false;
       return;
     }
-    if (!fixedFrameGeometryValidUnlocked(candidate)) {
+    if (!reacquired_segment && !fixedFrameGeometryValidUnlocked(candidate)) {
       return;
+    }
+    if (reacquired_segment) {
+      // There is no supported edge across this gap on which the OLD tangent's
+      // forward test could be meaningful. Normal same-segment reverse checking
+      // remains unchanged; new-segment observations have their own tangent.
+      last_fixed_frame_append_valid_=true;
+      last_history_action_="history_reacquisition_segment_ready";
     }
     updateUnconfirmedAccumulatorUnlocked(candidate);
     const double candidate_static_res =
@@ -3644,9 +3733,22 @@ class LeadTrailTracker {
       candidate.source_id = candidate.source_end_id = candidate.stamp.toNSec();
       candidate.history_s = last_confirmed.history_s + dist;
       candidate.segment_id = last_confirmed.segment_id + (supportedHistoryEdge(last_confirmed,candidate) ? 0 : 1);
+      if (cfg_.reacquisition_segment_recovery && candidate.segment_id != last_confirmed.segment_id) {
+        candidate.observation_start_supports_position =
+            reacquisition_start_.supports(candidate, cfg_.measurement_cross_sigma);
+        if (candidate.observation_start_supports_position &&
+            preceding_observation_start_ == last_confirmed.observation_support_start &&
+            preceding_observation_end_ >= last_confirmed.stamp &&
+            preceding_observation_end_ < candidate.observation_support_start) {
+          candidate.preceding_observation_start = preceding_observation_start_;
+          candidate.preceding_observation_end = preceding_observation_end_;
+        }
+      }
       confirmed_trail_world_.push_back(candidate);
       last_confirmed_append_stamp_ = candidate.stamp;
-      if (history_window_commit) {
+      if (reacquired_segment) {
+        last_history_action_ = "history_reacquisition_segment_appended";
+      } else if (history_window_commit) {
         last_history_action_ = "history_window_commit";
       } else if (last_history_action_ != "history_dynamic_accum_override") {
         last_history_action_ = "history_appended";
@@ -4921,8 +5023,52 @@ class LeadTrailTracker {
     }
   }
 
+  struct ReacquisitionStartSupport {
+    ros::Time start, last;
+    double min_x = 0., max_x = 0., min_y = 0., max_y = 0.;
+    unsigned samples = 0;
+    bool consistent = true;
+
+    void observe(const ros::Time& epoch, const ros::Time& stamp, double x, double y,
+                 bool trusted_pose, double lost_timeout) {
+      if (start.isZero()) start = epoch;
+      if (!consistent || !trusted_pose || !std::isfinite(x) || !std::isfinite(y) ||
+          start != epoch || (samples == 0 && stamp != start) ||
+          (samples != 0 && (stamp <= last || (stamp-last).toSec() > lost_timeout))) {
+        consistent = false;
+        return;
+      }
+      if (samples == 0) {
+        min_x = max_x = x;
+        min_y = max_y = y;
+      } else {
+        min_x = std::min(min_x, x);
+        max_x = std::max(max_x, x);
+        min_y = std::min(min_y, y);
+        max_y = std::max(max_y, y);
+      }
+      last = stamp;
+      ++samples;
+    }
+
+    bool supports(const HistoryPoint2D& point, double position_sigma) const {
+      if (!consistent || samples < 6 || start != point.observation_support_start ||
+          point.stamp < start || point.stamp > last || (point.stamp-start).toSec() < 0.20)
+        return false;
+      // Bounding rectangle contains every accepted observation, including the
+      // start. Certify that its farthest corner is within measurement noise
+      // of the confirmed point. Never infer support from endpoint proximity.
+      const double dx = std::max(std::fabs(point.x-min_x), std::fabs(point.x-max_x));
+      const double dy = std::max(std::fabs(point.y-min_y), std::fabs(point.y-max_y));
+      return hypot2(dx, dy) <= position_sigma;
+    }
+  };
+
   Config cfg_;
   LeadState2D track_;
+  ReacquisitionStartSupport reacquisition_start_;
+  ros::Time last_accepted_observation_, last_accepted_observation_start_;
+  ros::Time preceding_observation_start_, preceding_observation_end_;
   std::deque<LeadNode> nodes_;
   std::deque<HistoryPoint2D> confirmed_trail_world_;
   double follower_s_ = 0.0;
@@ -4973,6 +5119,7 @@ class LeadTrailTracker {
 class PathGenerator {
  public:
   struct Config {
+    bool supported_recovery_refresh = false;
     double raw_resample_ds = 0.08;
     double raw_fit_ds = 0.06;
     int raw_spline_passes = 4;
@@ -4987,6 +5134,25 @@ class PathGenerator {
     double raw_max_segment_kappa = 5.00;
     double reference_measurement_sigma = 0.12;
     double recovery_lost_timeout = 0.60;
+    bool reacquisition_use_observed_start = false;
+    bool recovery_chain_enabled = false;
+    bool recovery_two_point_startup = false;
+    bool startup_confirmed_tangent = false;
+    bool recovery_progress_continuity = false;
+    bool ordinary_prefix_refit = false;
+    bool joint_prefix_corridor_search = false;
+    bool recovery_observed_gap_fit = false;
+    bool recovery_interpolate_gap_goal = false;
+    bool ordinary_prefix_continuation = false;
+    bool retain_joint_prefix = false;
+    bool retain_rolling_joint_curve = false;
+    bool joint_supported_continuation = false;
+    bool durable_measured_rejoin = false;
+    bool independent_bend_rejoin = false;
+    bool recovery_rolling_steer_continuity = false;
+    bool successor_after_stale_recovery = false;
+    bool recovery_bend_tangent_search = false;
+    double recovery_confirmation_window = 0.80;
     double recovery_max_distance = 1.20;
     double recovery_max_speed = 0.60;
     double raw_backtrack_epsilon = 0.02;
@@ -5421,11 +5587,19 @@ class PathGenerator {
       c.col(3)=10*d-4*v+0.5*acc;c.col(4)=-15*d+7*v-acc;c.col(5)=6*d-3*v+0.5*acc;
       return c;
     }
-    static RefPoint evaluate(const Eigen::Matrix<double,2,6>& c,double u,double length) {
-      Eigen::Vector2d p=c.col(5),v=5*c.col(5),a=20*c.col(5);
+    static Eigen::Vector2d position(const Eigen::Matrix<double,2,6>& c,double u) {
+      Eigen::Vector2d p=c.col(5);
       for(int i=4;i>=0;--i)p=p*u+c.col(i);
+      return p;
+    }
+    static RefPoint evaluate(const Eigen::Matrix<double,2,6>& c,double u,double length,
+                             Eigen::Vector2d* velocity=nullptr,Eigen::Vector2d* acceleration=nullptr) {
+      const Eigen::Vector2d p=position(c,u);
+      Eigen::Vector2d v=5*c.col(5),a=20*c.col(5);
       for(int i=4;i>=1;--i)v=v*u+i*c.col(i);
       for(int i=4;i>=2;--i)a=a*u+i*(i-1)*c.col(i);
+      if(velocity)*velocity=v;
+      if(acceleration)*acceleration=a;
       RefPoint out;out.x=p.x();out.y=p.y();out.yaw=std::atan2(v.y(),v.x());
       out.kappa=(v.x()*a.y()-v.y()*a.x())/std::pow(std::max(1e-12,v.squaredNorm()),1.5);
       out.s=u*length;out.analytic_geometry=true;return out;
@@ -5570,17 +5744,15 @@ class PathGenerator {
     };
 
     Frame frameAt(double s) const {
-      Frame f;f.h=at(s);f.arc=s;
+      Frame f;f.arc=s;
       s=clampValue(s,0.,knots.back().s);
-      size_t i=std::upper_bound(knots.begin(),knots.end(),s,
-          [](double x,const RefPoint& p){return x<p.s;})-knots.begin();
-      i=std::max<size_t>(1,std::min(i,knots.size()-1));
-      const double length=std::max(1e-5,knots[i].s-knots[i-1].s);
+      const size_t i=intervalEnd(s);
+      const double span=knots[i].s-knots[i-1].s;
+      const double length=std::max(1e-5,span);
       const double u=(s-knots[i-1].s)/length;
       const auto& c=coefficients[i-1];
-      Eigen::Vector2d v=5*c.col(5),a=20*c.col(5),j=60*c.col(5);
-      for(int k=4;k>=1;--k)v=v*u+k*c.col(k);
-      for(int k=4;k>=2;--k)a=a*u+k*(k-1)*c.col(k);
+      Eigen::Vector2d v,a,j=60*c.col(5);
+      f.h=evaluate(c,u,span,&v,&a);f.h.s=s;
       for(int k=4;k>=3;--k)j=j*u+k*(k-1)*(k-2)*c.col(k);
       v/=length;a/=(length*length);j/=(length*length*length);
       f.speed=std::max(1e-8,v.norm());f.speed_rate=v.dot(a)/f.speed;
@@ -5590,17 +5762,30 @@ class PathGenerator {
       return f;
     }
 
+    size_t intervalEnd(double s) const {
+      const auto i=std::upper_bound(knots.begin(),knots.end(),s,
+          [](double x,const RefPoint& p){return x<p.s;})-knots.begin();
+      return std::max<size_t>(1,std::min<size_t>(i,knots.size()-1));
+    }
+
     RefPoint at(double s) const {
       if(knots.size()<2)return RefPoint();
       s=clampValue(s,0.,knots.back().s);
-      size_t i=std::upper_bound(knots.begin(),knots.end(),s,[](double x,const RefPoint& p){return x<p.s;})-knots.begin();
-      i=std::max<size_t>(1,std::min(i,knots.size()-1));const double length=knots[i].s-knots[i-1].s;
+      const size_t i=intervalEnd(s);
+      const double length=knots[i].s-knots[i-1].s;
       RefPoint p=evaluate(coefficients[i-1],(s-knots[i-1].s)/std::max(1e-5,length),length);p.s=s;return p;
     }
 
     double projectOrigin() const {
       if(knots.size()<2)return 0.;
-      auto distance=[&](double s){const auto p=at(s);return p.x*p.x+p.y*p.y;};
+      // Projection uses only position, so do not evaluate its yaw/curvature.
+      auto distance=[&](double s){
+        s=clampValue(s,0.,knots.back().s);
+        const size_t i=intervalEnd(s);
+        const double length=std::max(1e-5,knots[i].s-knots[i-1].s);
+        const auto p=position(coefficients[i-1],(s-knots[i-1].s)/length);
+        return p.x()*p.x()+p.y()*p.y();
+      };
       double best=0.,value=distance(0.),radius=(knots[1].s-knots[0].s)/8.;
       for(size_t i=1;i<knots.size();++i) {
         const double length=knots[i].s-knots[i-1].s;
@@ -5637,14 +5822,28 @@ class PathGenerator {
     double split_before=0.,split_after=0.;
     bool refined=false;
     bool joint_support=false;
+    bool chained_reacquisition=false;
+    bool progress_conditioned=false;
+    bool observed_gap_fit=false;
   };
+
+#ifdef P7_GEOMETRY_REPLAY
+  friend struct IndependentBendReplay;
+#endif
+
+  bool canReanchorIndependentBend(const RecoveryPlan& plan) const {
+    return cfg_.durable_measured_rejoin && cfg_.independent_bend_rejoin &&
+        plan.geometry && !plan.joint_support && !plan.observed_gap_fit &&
+        !plan.chained_reacquisition && plan.from!=0 && plan.from==plan.to &&
+        (plan.split_reason=="curvature" || plan.split_reason=="heading_jump");
+  }
 
   struct RecoveryFitCache {
     uint64_t from=0,to=0;
     ros::Time left_stamp,right_stamp;
     bool geometry=false,complete=false;
     size_t cursor=0;
-    std::vector<HistoryPoint2D> context,old_input,next_input;
+    std::vector<HistoryPoint2D> context,old_input,next_input,intermediate_input;
     std::vector<RecoveryPlan> plans;
   };
 
@@ -5670,7 +5869,7 @@ class PathGenerator {
     auto out=plan.prefix;
     out.insert(out.end(),plan.bridge.begin(),plan.bridge.end());
     for(const auto& h:next)if(h.stamp>plan.join_stamp) {
-      if(plan.joint_support && !supportedHistoryEdge(out.back(),h))break;
+      if((plan.joint_support || plan.observed_gap_fit) && !supportedHistoryEdge(out.back(),h))break;
       out.push_back(h);
     }
     return out;
@@ -5685,7 +5884,40 @@ class PathGenerator {
     if(!to)return {};
     const auto next=recoverySegment(to);
     if(debug){debug->recovery_from_segment=from;debug->recovery_to_segment=to;}
-    return fitRecoveryCandidates(old,next,false,debug);
+    if (cfg_.recovery_chain_enabled && to==from+1 &&
+        !next.empty() && next.size()<3) {
+      // A short-lived reacquisition can leave a permanent one- or two-point
+      // segment. Use it as observed position evidence, with the following
+      // segment providing the endpoint tangent. Require both associations.
+      const auto following=recoverySegment(to+1);
+      if (following.size()>=3)
+        return fitRecoveryCandidates(old,following,false,debug,next);
+    }
+    auto plans=fitRecoveryCandidates(old,next,false,debug);
+    if(!cfg_.recovery_observed_gap_fit || !plans.empty() ||
+       next.size()<3 || !boundedReacquisition(old.back(),next.front()))return plans;
+    size_t reached=1;
+    while(reached+1<next.size() &&
+          pointDistance(next.front().x,next.front().y,next[reached].x,next[reached].y)<
+              cfg_.raw_heading_min_distance)++reached;
+    if(pointDistance(next.front().x,next.front().y,next[reached].x,next[reached].y)<
+       cfg_.raw_heading_min_distance)return plans;
+    const auto continuous=[](const std::vector<HistoryPoint2D>& section) {
+      for(size_t i=1;i<section.size();++i)
+        if(!supportedHistoryEdge(section[i-1],section[i]))return false;
+      return true;
+    };
+    if(!continuous(old) || !continuous(next))return plans;
+    // Keep timestamps and the missing interval intact. The execution fit
+    // must use the measured geometry on both sides and pass the origin checks.
+    RecoveryPlan plan;
+    plan.from=from;plan.to=to;plan.join_stamp=next[reached].stamp;
+    plan.gap=pointDistance(old.back().x,old.back().y,next.front().x,next.front().y);
+    plan.dt=(next.front().stamp-old.back().stamp).toSec();
+    plan.prefix=old;plan.bridge.assign(next.begin(),next.begin()+reached+1);
+    plan.observed_gap_fit=true;
+    plans.push_back(std::move(plan));
+    return plans;
   }
 
   std::vector<RecoveryPlan> geometryRecoveryCandidates(TrackerDebugState* debug) const {
@@ -5696,13 +5928,16 @@ class PathGenerator {
     return fitRecoveryCandidates(before,after,true,debug);
   }
 
-  bool jointGeometrySupport(RecoveryPlan* plan) const {
+  bool jointGeometrySupport(RecoveryPlan* plan,bool short_startup=false) const {
     std::vector<HistoryPoint2D> before,after;
     for(const auto& h:geometry_split_.before)
       if(!h.predicted && !h.execution_only)before.push_back(h);
     for(const auto& h:geometry_split_.after)
       if(!h.predicted && !h.execution_only)after.push_back(h);
-    if(before.size()<3 || after.size()<3)return false;
+    // A two-point startup prefix cannot support a separately fitted end
+    // tangent. The joint fit can use this chord and the following measured
+    // points together, while retaining the continuous-association checks.
+    if(before.size()<(short_startup?2u:3u) || after.size()<3)return false;
     const auto& a=before.back();const auto& b=after.front();
     if(!a.segment_id || a.segment_id!=b.segment_id ||
        a.observation_support_start.isZero() || b.observation_support_start.isZero() ||
@@ -5727,8 +5962,40 @@ class PathGenerator {
     return true;
   }
 
+  bool boundedReacquisition(const HistoryPoint2D& a,const HistoryPoint2D& b) const {
+    const double dt=(b.stamp-a.stamp).toSec();
+    const double gap=pointDistance(a.x,a.y,b.x,b.y);
+    // Fixed-lag confirmation can advance the first exported point past the
+    // actual start of observations. Use that start for the timeout when the
+    // lag is bounded, or when continuous raw observations support the first
+    // confirmed position throughout a longer near-stationary interval.
+    // Distance and implied endpoint speed still use the confirmed endpoints.
+    double association_dt=dt;
+    if(cfg_.reacquisition_use_observed_start &&
+       b.observation_support_start>a.stamp &&
+       b.observation_support_start<=b.stamp) {
+      const double confirm_delay=(b.stamp-b.observation_support_start).toSec();
+      if(confirm_delay<=cfg_.recovery_confirmation_window ||
+         b.observation_start_supports_position)
+        association_dt=(b.observation_support_start-a.stamp).toSec();
+      if(cfg_.successor_after_stale_recovery && b.observation_start_supports_position &&
+         b.preceding_observation_start==a.observation_support_start &&
+         b.preceding_observation_end>=a.stamp &&
+         b.preceding_observation_end<b.observation_support_start) {
+        // Use the real lapse in qualified observations for time association.
+        // Geometry and implied speed are still checked on confirmed endpoints.
+        association_dt=(b.observation_support_start-b.preceding_observation_end).toSec();
+      }
+    }
+    return !a.observation_support_start.isZero() && b.observation_support_start>a.stamp &&
+        dt>0. && association_dt<=7.5*cfg_.recovery_lost_timeout &&
+        gap<=cfg_.recovery_max_speed*dt+2.*cfg_.reference_measurement_sigma &&
+        gap<=1.5*cfg_.recovery_max_distance;
+  }
+
   std::vector<RecoveryPlan> fitRecoveryCandidates(const std::vector<HistoryPoint2D>& observed_old,
-      const std::vector<HistoryPoint2D>& next,bool geometry,TrackerDebugState* debug) const {
+      const std::vector<HistoryPoint2D>& next,bool geometry,TrackerDebugState* debug,
+      const std::vector<HistoryPoint2D>& intermediate={}) const {
     const auto started=std::chrono::steady_clock::now();
     if(observed_old.size()<3 || next.empty()) {
       if(debug)debug->recovery_reason="waiting_confirmed_segment";return {};
@@ -5737,18 +6004,19 @@ class PathGenerator {
     const uint64_t from=a.segment_id,to=b.segment_id;
     const double dt=(b.stamp-a.stamp).toSec();
     const double gap=pointDistance(a.x,a.y,b.x,b.y);
+    const bool chained=!intermediate.empty();
     if(debug){debug->recovery_gap=gap;debug->recovery_gap_time=dt;
-      debug->execution_repair_kind=geometry?"continuous_geometry":"reacquisition";
+      debug->execution_repair_kind=geometry?"continuous_geometry":
+          (chained?"chained_reacquisition":"reacquisition");
       debug->recovery_from_segment=from;debug->recovery_to_segment=to;}
-    // Geometry repair requires continuous observation support. Reacquisition
-    // uses bounded endpoint association because PoseArray has no object IDs.
     const bool associated=geometry ?
         (from==to && !a.observation_support_start.isZero() &&
          !b.observation_support_start.isZero() && b.observation_support_start<=a.stamp &&
-         supportedHistoryEdge(a,b)) :
-        (!a.observation_support_start.isZero() && b.observation_support_start>a.stamp &&
-         dt>0. && dt<=7.5*cfg_.recovery_lost_timeout &&
-         gap<=cfg_.recovery_max_speed*dt+2.*cfg_.reference_measurement_sigma);
+         supportedHistoryEdge(a,b)) : chained ?
+        (intermediate.size()<=2 &&
+         (intermediate.size()==1 || supportedHistoryEdge(intermediate.front(),intermediate.back())) &&
+         boundedReacquisition(a,intermediate.front()) &&
+         boundedReacquisition(intermediate.back(),b)) : boundedReacquisition(a,b);
     if(!associated || gap>(geometry?1.:1.5)*cfg_.recovery_max_distance) {
       if(debug)debug->recovery_reason="association_unavailable";return {};
     }
@@ -5776,9 +6044,12 @@ class PathGenerator {
     cache.context.assign(old.begin()+keep,old.end());
     if(debug)debug->recovery_context_span=context_span;
     if(next.size()<3) {if(debug)debug->recovery_reason="waiting_confirmed_segment";return {};}
-    const bool unchanged=sameRecoveryPoints(cache.old_input,old) && sameRecoveryPoints(cache.next_input,next);
+    const bool unchanged=sameRecoveryPoints(cache.old_input,old) &&
+        sameRecoveryPoints(cache.next_input,next) &&
+        sameRecoveryPoints(cache.intermediate_input,intermediate);
     if(!unchanged) {
-      cache.old_input=old;cache.next_input=next;cache.cursor=0;cache.complete=false;cache.plans.clear();
+      cache.old_input=old;cache.next_input=next;cache.intermediate_input=intermediate;
+      cache.cursor=0;cache.complete=false;cache.plans.clear();
     } else if(cache.complete) {
       if(debug){debug->recovery_search_cached=true;debug->recovery_candidates=cache.plans.size();
         debug->recovery_reason=cache.plans.empty()?"gap_geometry_infeasible":"candidate_ready";}
@@ -5806,16 +6077,25 @@ class PathGenerator {
     const size_t coarse_end=2*anchors.size();
     for(double x:{0.80,1.00,1.20,0.10,0.20,0.40,0.50,0.70,0.90,1.10})
       for(double y:{0.30,0.,0.60,0.90,1.20,0.10,0.20,0.40,0.50,0.70,0.80,1.00,1.10})anchor(x,y,true);
+    const size_t standard_end=2*anchors.size();
+    // The same endpoint positions, headings, and curvatures can yield
+    // different interior curvature when endpoint derivative lengths change.
+    // Try those lengths only after the original bridge family is exhausted.
+    const bool try_alternative_tangents=cfg_.recovery_bend_tangent_search&&!geometry;
+    const size_t search_end=try_alternative_tangents?4*anchors.size():standard_end;
     auto& plans=cache.plans;
     int trials=0;
-    while(cache.cursor<2*anchors.size()) {
+    while(cache.cursor<search_end) {
+      if(cache.cursor>=standard_end&&!plans.empty())break;
       if(trials && (trials>=32 || std::chrono::duration<double,std::milli>(
           std::chrono::steady_clock::now()-started).count()>=3.0))break;
       const size_t cursor=cache.cursor++;
-      const auto& selected=anchors[cursor/2];
+      const bool alternative=cursor>=standard_end;
+      const size_t trial=alternative?cursor-standard_end:cursor;
+      const auto& selected=anchors[trial/2];
       const size_t left=selected.left,right=selected.right;
       const double overlap_before=selected.before,overlap_after=selected.after;
-      const double scale=cursor%2?1.15:1.0;
+      const double scale=alternative?(trial%2?0.85:1.30):(trial%2?1.15:1.0);
       ++trials;
       RefPoint start=before.at(before.knots[left].s),end=after.at(after.knots[right].s);
       start.x=old[left].x;start.y=old[left].y;end.x=next[right].x;end.y=next[right].y;
@@ -5851,12 +6131,14 @@ class PathGenerator {
         error=std::max(error,distance);
       };
       for(size_t i=left;i<old.size();++i)deviation(old[i]);
+      for(const auto& h:intermediate)deviation(h);
       for(size_t i=0;i<=right;++i)deviation(next[i]);
       if(error>cfg_.reference_measurement_sigma){if(debug)++debug->recovery_shape_rejects;continue;}
       RecoveryPlan plan;plan.from=from;plan.to=to;plan.join_stamp=next[right].stamp;
       plan.gap=gap;plan.dt=dt;plan.error=error;
       plan.geometry=geometry;
-      plan.refined=selected.refined;
+      plan.chained_reacquisition=chained;
+      plan.refined=selected.refined||alternative;
       if(geometry) {
         plan.split_reason=geometry_split_.reason;
         plan.split_before=a.stamp.toSec();plan.split_after=b.stamp.toSec();
@@ -5873,7 +6155,7 @@ class PathGenerator {
       plans.push_back(std::move(plan));
       if(cache.cursor>=coarse_end && !plans.empty())break;
     }
-    cache.complete=cache.cursor>=2*anchors.size();
+    cache.complete=cache.cursor>=search_end||(cache.cursor>=standard_end&&!plans.empty());
     std::stable_sort(plans.begin(),plans.end(),[](const RecoveryPlan& a,const RecoveryPlan& b){
       if(a.refined!=b.refined)return !a.refined;return a.cost<b.cost;
     });
@@ -5922,6 +6204,212 @@ class PathGenerator {
     return true;
   }
 
+  static constexpr double kOriginSteeringRateMinSpeed=0.05;
+
+  // The stopped vehicle fixes position, tangent and curvature at the origin.
+  // Beyond this short transition every point must lie in the original
+  // measurement corridor. Within it, the fixed starting position can
+  // already be outside that corridor. Do not increase its deviation, and
+  // limit movement from the executable incumbent at the same arc.
+  std::vector<RefPoint> reanchorStoppedPrefix(const std::vector<LocalPathPoint>& incumbent,
+      const std::vector<RefPoint>& measured,double delta,double initial_kappa,
+      double minimum_span,double* cap,double* length) const {
+    if(incumbent.size()<3 || measured.size()<3)return {};
+    const double tolerance=cfg_.reference_measurement_sigma;
+    const double transition=0.15;
+    const double origin_corridor=std::max(tolerance,localSupportDistance(0.,0.,measured));
+    if(origin_corridor>1.25*tolerance)return {};
+    const double max_span=polylineLengthLocal(incumbent)+0.80;
+    RefPoint start;
+    start.yaw=std::atan(0.5*std::tan(delta));
+    start.kappa=initial_kappa;start.analytic_geometry=true;
+    std::vector<RefPoint> trial,best;
+    trial.reserve(150);
+    const auto deadline=std::chrono::steady_clock::now()+std::chrono::milliseconds(3);
+    size_t first=measured.size(),last=0;
+    for(size_t i=1;i<measured.size();++i) {
+      const auto& a=measured[i-1];const auto& b=measured[i];
+      if(std::max(a.x,b.x)<-origin_corridor || std::min(a.x,b.x)>max_span+origin_corridor)continue;
+      first=std::min(first,i-1);last=i;
+    }
+    if(first>=last)return {};
+    const std::vector<RefPoint> corridor(measured.begin()+first,measured.begin()+last+1);
+    if(corridor.size()<3)return {};
+    // Seek a usable stopping horizon first. Trying every combination at
+    // distant anchors before a feasible shorter one wastes the tick budget.
+    const double preferred_span=0.5*(minimum_span+max_span);
+    std::array<std::pair<double,size_t>,10> goals{};
+    size_t goal_count=0;
+    for(size_t i=1;i+1<measured.size();++i) {
+      const auto& anchor=measured[i];
+      const double distance=hypot2(anchor.x,anchor.y);
+      if(anchor.x<0.35 || distance>max_span || distance+tolerance<minimum_span)continue;
+      const auto& a=measured[i>1?i-2:i-1];
+      const auto& b=measured[std::min(i+2,measured.size()-1)];
+      if(b.x<=a.x || pointDistance(a.x,a.y,b.x,b.y)<cfg_.raw_heading_min_distance)continue;
+      const auto entry=std::make_pair(std::fabs(distance-preferred_span),i);
+      const auto position=std::lower_bound(goals.begin(),goals.begin()+goal_count,entry);
+      if(position==goals.end())continue;
+      goal_count=std::min(goal_count+1,goals.size());
+      std::move_backward(position,goals.begin()+goal_count-1,goals.begin()+goal_count);
+      *position=entry;
+    }
+    for(bool refine:{false,true})for(size_t index=0;index<goal_count;++index) {
+      const size_t i=goals[index].second;
+      const auto& anchor=measured[i];
+      const auto& a=measured[i>1?i-2:i-1];
+      const auto& b=measured[std::min(i+2,measured.size()-1)];
+      const double tangent=std::atan2(b.y-a.y,b.x-a.x);
+      const double nx=-std::sin(tangent),ny=std::cos(tangent);
+      const double inward=anchor.x*nx+anchor.y*ny>0.?-1.:1.;
+      for(double offset:{0.85*inward,-0.85*inward,0.,0.5*inward,-0.5*inward})
+        for(double blend:{0.35,0.70,0.,1.})
+          for(double scale:{1.,0.8}) {
+        const bool coarse=std::fabs(offset)==0.85 && blend>0. && blend<1. && scale==1.;
+        if(coarse==refine)continue;
+        if(std::chrono::steady_clock::now()>=deadline)return best;
+        RefPoint goal=anchor;
+        goal.x+=offset*tolerance*nx;goal.y+=offset*tolerance*ny;
+        const double span=hypot2(goal.x,goal.y);
+        if(goal.x<=0. || span+tolerance<minimum_span || span>max_span)continue;
+        const double chord=std::atan2(goal.y,goal.x);
+        goal.yaw=chord+blend*wrapAngle(tangent-chord);goal.kappa=0.;
+        const auto coefficients=OriginSpline::segment(start,goal,scale*span);
+        const int samples=std::max(6,static_cast<int>(std::ceil(span/0.015)));
+        trial.clear();trial.push_back(start);
+        bool valid=true;
+        double covered=0.;
+        size_t edge=1;
+        for(int j=1;j<=samples;++j) {
+          auto p=OriginSpline::evaluate(coefficients,double(j)/samples,span);
+          covered+=pointDistance(trial.back().x,trial.back().y,p.x,p.y);
+          if(p.x<=trial.back().x) {valid=false;break;}
+          if(!findSupportingEdge(p,corridor,tolerance,&edge)) {
+            if(covered>transition) {valid=false;break;}
+            const auto old=referencePointAtArc(incumbent,covered);
+            const double deviation=pointDistance(p.x,p.y,old.first,old.second);
+            if(deviation>0.25*tolerance ||
+               localSupportDistance(p.x,p.y,corridor)>origin_corridor+1e-6) {
+              valid=false;break;
+            }
+          }
+          trial.push_back(p);
+        }
+        double trial_cap,energy;
+        if(!valid || covered<minimum_span || covered<=*length+1e-6 ||
+           !sharedNearField(incumbent,trial,transition,0.25*tolerance) ||
+           !originFeasible(trial,delta,&trial_cap,&energy) ||
+           trial_cap<=kOriginSteeringRateMinSpeed)continue;
+        best=trial;*cap=trial_cap;*length=covered;
+      }
+    }
+    return best;
+  }
+
+  std::vector<RefPoint> extendMeasuredPrefix(const std::vector<LocalPathPoint>& incumbent,
+      const std::vector<RefPoint>& measured,double delta,double* cap,double* length,
+      double overlap_corridor=0.) const {
+    std::vector<RefPoint> prefix,best,trial;
+    const double incumbent_length=polylineLengthLocal(incumbent);
+    const double minimum_length=incumbent_length+cfg_.raw_heading_min_distance;
+    const double tolerance=cfg_.reference_measurement_sigma;
+    double arc=0.;
+    for(size_t i=0;i<incumbent.size();++i) {
+      const auto& p=incumbent[i];
+      if(i)arc+=pointDistance(p.x,p.y,incumbent[i-1].x,incumbent[i-1].y);
+      RefPoint q;q.x=p.x;q.y=p.y;q.yaw=p.yaw;q.kappa=p.curvature;q.analytic_geometry=true;
+      prefix.push_back(q);
+      if(arc>=std::min(0.24,0.5*incumbent_length))break;
+    }
+    if(prefix.size()<3)return {};
+    const auto& start=prefix.back();
+    trial.reserve(prefix.size()+135);
+    size_t goals=0;
+    double previous_goal=0.;
+    for(size_t i=1;i+1<measured.size() && goals<6;++i) {
+      const auto& anchor=measured[i];
+      const double from_start=pointDistance(start.x,start.y,anchor.x,anchor.y);
+      if(anchor.x<=start.x || arc+from_start+tolerance<minimum_length ||
+         arc+from_start>incumbent_length+0.80 || from_start<previous_goal+0.06)continue;
+      const auto& a=measured[i>1?i-2:i-1];
+      const auto& b=measured[std::min(i+2,measured.size()-1)];
+      if(pointDistance(a.x,a.y,b.x,b.y)<cfg_.raw_heading_min_distance)continue;
+      ++goals;previous_goal=from_start;
+      const double tangent=std::atan2(b.y-a.y,b.x-a.x);
+      for(double offset:{0.,-0.5,0.5,-0.85,0.85})for(double blend:{0.,0.25,0.5}) {
+        RefPoint goal=anchor;
+        goal.x-=offset*tolerance*std::sin(tangent);
+        goal.y+=offset*tolerance*std::cos(tangent);
+        const double span=pointDistance(start.x,start.y,goal.x,goal.y);
+        if(goal.x<=start.x || arc+span<minimum_length)continue;
+        const double chord=std::atan2(goal.y-start.y,goal.x-start.x);
+        goal.yaw=chord+blend*wrapAngle(tangent-chord);goal.kappa=0.;
+        const auto coefficients=OriginSpline::segment(start,goal,0.90*span);
+        const int samples=std::max(6,static_cast<int>(std::ceil(span/0.015)));
+        trial=prefix;
+        size_t edge=i;
+        double covered=arc;
+        for(int j=1;j<=samples;++j) {
+          const auto p=OriginSpline::evaluate(coefficients,double(j)/samples,span);
+          covered+=pointDistance(trial.back().x,trial.back().y,p.x,p.y);
+          const double corridor=covered<=incumbent_length?std::max(tolerance,overlap_corridor):tolerance;
+          if(p.x<=trial.back().x || !findSupportingEdge(p,measured,corridor,&edge))break;
+          trial.push_back(p);
+        }
+        double trial_cap,energy;
+        size_t feasible=0;
+        originFeasible(trial,delta,&trial_cap,&energy,&feasible);
+        if(feasible<=prefix.size())continue;
+        trial.resize(feasible);
+        covered=arc;
+        for(size_t j=prefix.size();j<trial.size();++j)
+          covered+=pointDistance(trial[j-1].x,trial[j-1].y,trial[j].x,trial[j].y);
+        if(covered<minimum_length || covered<=*length+1e-6 || trial_cap<0.01 ||
+           !sharedNearField(incumbent,trial,0.40,0.25*tolerance,0.40))continue;
+        best=trial;*cap=trial_cap;*length=covered;
+      }
+    }
+    return best;
+  }
+
+  std::vector<RefPoint> transportJointPrefix(const EgoPose2D& ego, double beta,
+      double initial_kappa, const std::vector<HistoryPoint2D>& previous,
+      double* cap, double* span, double minimum_rate_cap=0.) const {
+    std::vector<RefPoint> local;
+    local.reserve(previous.size());
+    for(const auto& h:previous) {
+      RefPoint p;worldToBodyCenter(ego,h.x,h.y,&p.x,&p.y);
+      p.yaw=wrapAngle(h.heading-ego.yaw);p.kappa=h.curvature;p.analytic_geometry=true;
+      local.push_back(p);
+    }
+    if(local.size()<3 || hypot2(local.front().x,local.front().y)>0.12)return {};
+    RefPoint start;start.yaw=beta;start.kappa=initial_kappa;start.analytic_geometry=true;
+    for(double distance:{0.15,0.25,0.35}) {
+      const auto goal=std::find_if(local.begin(),local.end(),[distance](const RefPoint& p){return p.x>=distance;});
+      if(goal==local.end() || std::distance(goal,local.end())<3)continue;
+      const double length=hypot2(goal->x,goal->y);
+      const auto coefficients=OriginSpline::segment(start,*goal,length);
+      const int count=std::max(6,static_cast<int>(std::ceil(length/0.015)));
+      std::vector<RefPoint> path;
+      path.reserve(local.size()+count);
+      for(int i=0;i<count;++i)path.push_back(OriginSpline::evaluate(coefficients,double(i)/count,length));
+      path.insert(path.end(),goal,local.end());
+      double arc=0.;bool valid=true;size_t edge=1;
+      for(size_t i=0;i<path.size();++i) {
+        if((i && path[i].x<=path[i-1].x) ||
+           !findSupportingEdge(path[i],local,0.25*cfg_.reference_measurement_sigma,&edge)){
+          valid=false;break;
+        }
+        if(i)arc+=pointDistance(path[i-1].x,path[i-1].y,path[i].x,path[i].y);
+      }
+      double energy;
+      if(valid && originFeasible(path,ego.delta,cap,&energy) && *cap>=minimum_rate_cap) {
+        *span=arc;return path;
+      }
+    }
+    return {};
+  }
+
   double estimateOriginSteeringRate(const EgoPose2D& ego,TrackerDebugState* debug) const {
     if(debug) {
       debug->origin_steer_rate_raw=debug->origin_steer_rate_estimated=debug->origin_steer_rate_applied=0.;
@@ -5958,7 +6446,7 @@ class PathGenerator {
     }
     const bool valid=count>=2 && variance>1e-10;
     const double rate=valid?clampValue(covariance/variance,-1.,1.):0.;
-    const double applied=std::fabs(ego.v)>0.05?rate:0.;
+    const double applied=std::fabs(ego.v)>kOriginSteeringRateMinSpeed?rate:0.;
     if(debug) {
       debug->origin_steer_rate_raw=origin_steer_rate_raw_;
       debug->origin_steer_rate_estimated=rate;debug->origin_steer_rate_applied=applied;
@@ -5968,9 +6456,40 @@ class PathGenerator {
     return applied;
   }
 
+  std::vector<HistoryPoint2D> confirmedStartupSupport(std::uint64_t segment,
+                                                     const EgoPose2D& ego) const {
+    std::vector<HistoryPoint2D> support;
+    for(const auto& h:recovery_observed_world_) {
+      if(h.segment_id!=segment || h.predicted || h.execution_only ||
+         h.stamp.isZero() || h.stamp>ego.stamp || h.observation_support_start.isZero() ||
+         h.observation_support_start>h.stamp)continue;
+      if(!support.empty() && !supportedHistoryEdge(support.back(),h))return {};
+      if(support.empty() || (h.stamp>support.back().stamp &&
+         pointDistance(h.x,h.y,support.back().x,support.back().y)>=cfg_.raw_duplicate_min_distance))
+        support.push_back(h);
+    }
+    if(support.size()<3 || (ego.stamp-support.back().stamp).toSec()>cfg_.reference_stale_hold_time)
+      return {};
+    // Consecutive sample spacings can be much smaller than the position
+    // noise scale. Require two heading baselines before accepting an initial
+    // tangent, and fit the motion positions at the usual spatial resolution.
+    if(pointDistance(support.front().x,support.front().y,support.back().x,support.back().y)<
+       2.*cfg_.raw_heading_min_distance)return {};
+    recomputeHeadingStable(support,cfg_.raw_heading_min_distance,cfg_.raw_heading_hold_distance,
+                          cfg_.raw_max_heading_step);
+    offsetWorldPathAlongHeading(&support,cfg_.lead_center_to_path_ref_offset);
+    return resampleWorldByArcLength(support,cfg_.raw_resample_ds);
+  }
+
   std::vector<LocalPathPoint> buildOriginReference(const std::vector<RawTrailPoint>& input,
       const EgoPose2D& ego,TrackerDebugState* debug,double fit_length=0.10,double fit_limit=0.015,
-      double terminal_offset=std::numeric_limits<double>::quiet_NaN(),bool constrained_fit=false) const {
+      double terminal_offset=std::numeric_limits<double>::quiet_NaN(),bool constrained_fit=false,
+      bool prefer_progress=false,const std::vector<LocalPathPoint>* near_field=nullptr,
+      double overlap_corridor=0.,size_t observed_gap_index=0,bool supported_prefix_splice=false,
+      bool transport_joint_prefix=false,bool use_splice_overlap_corridor=false,
+      double stopped_rejoin_minimum=0.) const {
+    const ros::Time prior_pose_stamp=origin_previous_stamp_;
+    const ros::Time prior_source_stamp=current_geometry_source_stamp_;
     const double delta_rate=estimateOriginSteeringRate(ego,debug);
     origin_rate_cap_=0.;origin_residual_=0.;origin_mode_="unavailable";
     origin_prefix_only_=false;
@@ -6027,6 +6546,25 @@ class PathGenerator {
       if(debug)debug->origin_reject=debug->reference_reason=origin_reject_;
       return {};
     }
+    bool confirmed_startup=false;
+    if(!observed_gap_index && cfg_.startup_confirmed_tangent && !cached && origin_approaching_ &&
+       origin_approach_world_.empty() && world.front().segment_id!=0 && !world.front().execution_only) {
+      double initial_x,initial_y;
+      worldToBodyCenter(ego,world.front().x,world.front().y,&initial_x,&initial_y);
+      confirmed_startup=initial_x>cfg_.raw_heading_min_distance;
+    }
+    const bool continuing_startup=stopped_rejoin_minimum<=0. && !observed_gap_index && cfg_.startup_confirmed_tangent && !cached &&
+        !origin_approach_world_.empty() && world.front().segment_id!=0 &&
+        std::none_of(world.begin(),world.end(),[](const HistoryPoint2D& h){return h.execution_only;});
+    if(confirmed_startup || continuing_startup) {
+      auto support=confirmedStartupSupport(world.front().segment_id,ego);
+      if(confirmed_startup && support.size()<3) {
+        origin_reject_="startup_wait_confirmed_tangent";
+        if(debug)debug->origin_reject=debug->reference_reason=origin_reject_;
+        return {};
+      }
+      if(support.size()>=3)world=std::move(support);
+    }
     std::vector<RefPoint> history;
     for(const auto& h:world) {
       RefPoint p;worldToBodyCenter(ego,h.x,h.y,&p.x,&p.y);
@@ -6035,9 +6573,9 @@ class PathGenerator {
     if(history.size()<2)return {};
     // A startup connector is stored in fixed coordinates once. It remains an
     // execution prefix, never written into confirmed leader history.
-    auto approach_world=origin_approach_world_;
-    bool approaching=origin_approaching_;
-    bool approach_provisional=origin_approach_provisional_;
+    auto approach_world=observed_gap_index?std::vector<HistoryPoint2D>():origin_approach_world_;
+    bool approaching=!observed_gap_index && origin_approaching_;
+    bool approach_provisional=!observed_gap_index && origin_approach_provisional_;
     bool startup_reanchor=false;
     bool startup_support=false;
     if(!approach_world.empty()) {
@@ -6053,7 +6591,23 @@ class PathGenerator {
       const bool measured_reached=measured_s>1e-5 &&
           hypot2(measured_projection.x,measured_projection.y)<0.30;
       if(measured_reached) approach_world.clear();
-      else if(gap<0.06) {
+      else if(gap<0.06 && cfg_.startup_confirmed_tangent) {
+        // The connector is sampled at 1 cm, whereas the measured suffix
+        // uses the larger raw spacing. Fit the joined geometry on a single
+        // spatial grid so that the join does not reintroduce a sharp tangent.
+        auto support=approach_world;
+        for(size_t i=nearest+1;i<world.size();++i)
+          if(pointDistance(support.back().x,support.back().y,world[i].x,world[i].y)>0.005)
+            support.push_back(world[i]);
+        support=resampleWorldByArcLength(support,cfg_.raw_resample_ds);
+        history.clear();
+        history.reserve(support.size());
+        for(const auto& h:support) {
+          RefPoint p;worldToBodyCenter(ego,h.x,h.y,&p.x,&p.y);
+          history.push_back(p);
+        }
+        startup_support=true;
+      } else if(gap<0.06) {
         std::vector<RefPoint> support;
         for(const auto& h:approach_world) {
           RefPoint p;worldToBodyCenter(ego,h.x,h.y,&p.x,&p.y);
@@ -6100,7 +6654,9 @@ class PathGenerator {
         }
       }
     }
-    OriginSpline curve(history,true,fit_length,fit_limit,constrained_fit);
+    OriginSpline curve(history,stopped_rejoin_minimum<=0. && !observed_gap_index &&
+                       !supported_prefix_splice && !transport_joint_prefix,
+                       fit_length,fit_limit,constrained_fit);
     if(debug) {
       debug->origin_fit_adjust=curve.fit_adjust;
       debug->origin_fit_constraint_sweeps=curve.fit_constraint_sweeps;
@@ -6125,32 +6681,226 @@ class PathGenerator {
     const double initial_kappa=rear_kappa*std::cos(beta)+beta_prime*delta_rate/std::max(0.05,std::fabs(ego.v)/std::cos(beta));
     if(debug){debug->origin_along=along;debug->origin_initial_kappa=initial_kappa;}
     origin_previous_delta_=ego.delta;origin_previous_stamp_=ego.stamp;
-    std::vector<RefPoint> best;double best_cost=std::numeric_limits<double>::infinity();double best_cap=0.,best_end=0.;
+    std::vector<RefPoint> best;double best_cost=std::numeric_limits<double>::infinity();
+    double best_cap=0.,best_end=0.,best_span=0.,best_terminal=terminal_offset;
     const double available=curve.knots.back().s-start;
     if(debug){debug->origin_remaining=available;debug->join_state_s=start;}
     std::vector<RefPoint> previous_local;
     double previous_start=0.,previous_distance=1e9;
     for(const auto& h:origin_previous_plan_world_) {
       RefPoint p;worldToBodyCenter(ego,h.x,h.y,&p.x,&p.y);
+      p.kappa=h.curvature;
       if(!previous_local.empty())p.s=previous_local.back().s+
           pointDistance(p.x,p.y,previous_local.back().x,previous_local.back().y);
       if(hypot2(p.x,p.y)<previous_distance){previous_distance=hypot2(p.x,p.y);previous_start=p.s;}
       previous_local.push_back(p);
     }
-    OriginSpline previous_curve(previous_local);
+    OriginSpline previous_curve(observed_gap_index?std::vector<RefPoint>():previous_local);
+    const bool continuous_selection=cfg_.recovery_progress_continuity && !cached && !observed_gap_index &&
+        !prior_pose_stamp.isZero() && ego.stamp>=prior_pose_stamp &&
+        (ego.stamp-prior_pose_stamp).toSec()<=0.12 && previous_local.size()>2 &&
+        previous_distance<0.20 && !prior_source_stamp.isZero() && world.back().stamp>=prior_source_stamp;
+    const bool same_source=continuous_selection && world.back().stamp==prior_source_stamp;
+    std::vector<RefPoint> prior_samples;
+    std::array<double,4> prior_nominal_steering{};
+    const bool compare_rolling_steering=cfg_.recovery_rolling_steer_continuity &&
+        continuous_selection && recovery_active_ && recovery_plan_.geometry &&
+        recovery_plan_.from==recovery_plan_.to && ego.v>kOriginSteeringRateMinSpeed &&
+        prior_source_stamp<=ego.stamp && (ego.stamp-prior_source_stamp).toSec()<=cfg_.reference_stale_hold_time;
+    if(continuous_selection) {
+      previous_start=previous_curve.projectOrigin();
+      for(double arc:{0.15,0.30,0.45,0.60}) {
+        const double station=previous_start+arc;
+        if(station>previous_curve.knots.back().s)break;
+        if(compare_rolling_steering) {
+          auto old=std::lower_bound(previous_local.begin(),previous_local.end(),station,
+              [](const RefPoint& p,double s){return p.s<s;});
+          const auto& b=old==previous_local.end()?previous_local.back():*old;
+          const auto& a=old==previous_local.begin()?b:*(old-1);
+          const double t=clampValue((station-a.s)/std::max(1e-7,b.s-a.s),0.,1.);
+          prior_nominal_steering[prior_samples.size()]=std::atan(0.60*(a.kappa+t*(b.kappa-a.kappa)));
+        }
+        prior_samples.push_back(previous_curve.at(station));
+      }
+    }
+    std::vector<RefPoint> near_samples;
+    const double overlap_span=near_field?polylineLengthLocal(*near_field):0.;
+    if(near_field) {
+      // The first 0.40 m covers the immediate tracking response. The
+      // bend beyond that is the part the repair is intended to recover.
+      for(double s:{0.15,0.30,0.40}) {
+        if(s>overlap_span)break;
+        const auto xy=referencePointAtArc(*near_field,s);
+        RefPoint sample;sample.s=s;sample.x=xy.first;sample.y=xy.second;
+        near_samples.push_back(sample);
+      }
+    }
+    const auto follows_near_field=[&](const std::vector<RefPoint>& candidate) {
+      return std::all_of(near_samples.begin(),near_samples.end(),[&](const RefPoint& sample) {
+        const auto xy=referencePointAtArc(candidate,sample.s);
+        return pointDistance(sample.x,sample.y,xy.first,xy.second)<=
+            0.25*cfg_.reference_measurement_sigma;
+      });
+    };
+    const auto supported_prefix=[&](const std::vector<RefPoint>& candidate,std::size_t points,
+                                     double* span) {
+      *span=0.;
+      std::size_t edge=1;
+      for(std::size_t i=0;i<points;++i) {
+        const double ds=i?pointDistance(candidate[i-1].x,candidate[i-1].y,
+                                         candidate[i].x,candidate[i].y):0.;
+        const double tolerance=near_field && *span+ds<=overlap_span?
+            overlap_corridor:cfg_.reference_measurement_sigma;
+        if(!findSupportingEdge(candidate[i],history,tolerance,&edge))return i;
+        *span+=ds;
+      }
+      return points;
+    };
     // Startup has no measured near-field history. Its one-time approach is
     // explicitly distinguished from a return along observed history.
-    if(along>1e-5 && start<1e-4 && approaching && !startup_support) {
+    if(stopped_rejoin_minimum>0. && near_field) {
+      best=reanchorStoppedPrefix(*near_field,history,ego.delta,initial_kappa,
+                                  stopped_rejoin_minimum,&best_cap,&best_span);
+      if(!best.empty()) {
+        best_end=best_span;origin_mode_="history_return_prefix";origin_prefix_only_=true;
+      }
+    } else if(transport_joint_prefix) {
+      best=transportJointPrefix(ego,beta,initial_kappa,joint_prefix_world_,&best_cap,&best_span,
+                                joint_prefix_spliced_?std::max(0.,ego.v):0.);
+      if(!best.empty()) {
+        best_end=best_span;origin_mode_="history_return_prefix";origin_prefix_only_=true;
+      }
+    } else if(supported_prefix_splice && near_field) {
+      best=extendMeasuredPrefix(*near_field,history,ego.delta,&best_cap,&best_span,
+                                use_splice_overlap_corridor?overlap_corridor:0.);
+      if(!best.empty()) {
+        best_end=best_span;
+        origin_mode_="history_return_prefix";origin_prefix_only_=true;
+      }
+    } else if(observed_gap_index) {
+      // Rejoin from the actual vehicle state. A chord spanning the goal
+      // within the newly observed segment avoids forcing its first tangent.
       RefPoint first;first.yaw=beta;first.kappa=initial_kappa;
+      if(debug)debug->origin_candidate_reject="observed_gap_goal_unavailable";
+      RefPoint left_witness;
+      worldToBodyCenter(ego,world[observed_gap_index-1].x,world[observed_gap_index-1].y,
+                        &left_witness.x,&left_witness.y);
+      const auto try_goal=[&](const RefPoint& goal,double lateral_offset) {
+        const double length=hypot2(goal.x,goal.y);
+        if(goal.x<cfg_.raw_heading_min_distance || length>2.5)return false;
+        const double old_support_fraction=clampValue(hypot2(left_witness.x,left_witness.y)/length,0.,1.);
+        if(lateral_offset!=0. && (left_witness.x<cfg_.raw_heading_min_distance ||
+                                 old_support_fraction<=1e-6))return false;
+        const auto coefficients=OriginSpline::segment(first,goal,length);
+        const int count=std::max(6,static_cast<int>(std::ceil(length/0.015)));
+        std::vector<RefPoint> candidate;
+        candidate.reserve(count+1);
+        for(int j=0;j<=count;++j) {
+          const double u=double(j)/count;
+          RefPoint p;
+          if(lateral_offset==0. || u>=old_support_fraction)
+            p=OriginSpline::evaluate(coefficients,u,length);
+          else {
+            // Sixth-degree interior correction. Value and first two
+            // derivatives vanish at both ends of the old measured support.
+            // The correction does not bend the missing interval.
+            Eigen::Vector2d velocity,acceleration;
+            p=OriginSpline::evaluate(coefficients,u,length,&velocity,&acceleration);
+            const double t=u/old_support_fraction,g=t*(1.-t),slope=1.-2.*t,s=64.*lateral_offset;
+            p.y+=s*g*g*g;
+            velocity.y()+=3.*s*g*g*slope/old_support_fraction;
+            acceleration.y()+=6.*s*g*(slope*slope-g)/square(old_support_fraction);
+            p.yaw=std::atan2(velocity.y(),velocity.x());
+            p.kappa=(velocity.x()*acceleration.y()-velocity.y()*acceleration.x())/
+                std::pow(std::max(1e-12,velocity.squaredNorm()),1.5);
+          }
+          if(!candidate.empty() && p.x<=candidate.back().x)break;
+          candidate.push_back(p);
+        }
+        double cap,energy,span;
+        if(candidate.size()!=static_cast<size_t>(count+1) ||
+           !originFeasible(candidate,ego.delta,&cap,&energy) || cap<0.01) {
+          if(debug)debug->origin_candidate_reject="observed_gap_steering_infeasible";
+          return false;
+        }
+        if(supported_prefix(candidate,candidate.size(),&span)!=candidate.size()) {
+          if(debug)debug->origin_candidate_reject="observed_gap_corridor_violation";
+          return false;
+        }
+        if(near_field && !sharedNearField(*near_field,candidate,std::min(overlap_span,0.40),
+                                        0.25*cfg_.reference_measurement_sigma,0.40)) {
+          if(debug)debug->origin_candidate_reject="observed_gap_near_field_shift";
+          return false;
+        }
+        best=std::move(candidate);best_cap=cap;best_span=best_end=span;
+        origin_mode_="history_return_prefix";origin_prefix_only_=true;
+        if(debug)debug->origin_candidate_reject="none";
+        return true;
+      };
+      for(size_t i=observed_gap_index+1;i+1<world.size() &&
+              i<=observed_gap_index+3;++i) {
+        const auto& before=world[i-1];const auto& after=world[i+1];
+        RefPoint goal;worldToBodyCenter(ego,world[i].x,world[i].y,&goal.x,&goal.y);
+        const double local_yaw=std::atan2(after.y-before.y,after.x-before.x);
+        // The latest point of the continuous new segment also constrains the
+        // exit direction. Give the immediate two-sided measurement priority.
+        const auto& newest=world.back();
+        const double observed_yaw=std::atan2(newest.y-before.y,newest.x-before.x);
+        goal.yaw=wrapAngle(local_yaw+0.25*wrapAngle(observed_yaw-local_yaw)-ego.yaw);
+        if(pointDistance(before.x,before.y,after.x,after.y)<cfg_.raw_heading_min_distance ||
+           pointDistance(world[observed_gap_index].x,world[observed_gap_index].y,
+                         world[i].x,world[i].y)<2.*cfg_.raw_heading_min_distance)continue;
+        if(try_goal(goal,0.))break;
+      }
+      if(cfg_.recovery_interpolate_gap_goal && best.empty()) {
+        // A sparse successor can have no sampled knot between the minimum
+        // observed advance and the local horizon. Search on the measured
+        // chords, preserving both bounds and the candidate's evidence time.
+        const auto deadline=std::chrono::steady_clock::now()+std::chrono::milliseconds(3);
+        const auto& entry=world[observed_gap_index];
+        for(size_t i=observed_gap_index+1;i<world.size() && i<=observed_gap_index+4 && best.empty();++i) {
+          const auto& left=world[i-1];const auto& right=world[i];
+          if(!supportedHistoryEdge(left,right))break;
+          const double sx=right.x-left.x,sy=right.y-left.y;
+          const double chord_span=hypot2(sx,sy);
+          if(chord_span<1e-6)continue;
+          const double observed_yaw=wrapAngle(std::atan2(sy,sx)-ego.yaw);
+          const int count=std::min(8,std::max(2,static_cast<int>(
+              std::ceil(chord_span/(0.5*cfg_.raw_heading_min_distance)))));
+          for(int j=1;j<count && best.empty() && std::chrono::steady_clock::now()<deadline;++j) {
+            const double u=double(j)/count;
+            const double x=left.x+u*sx,y=left.y+u*sy;
+            if(pointDistance(entry.x,entry.y,x,y)<2.*cfg_.raw_heading_min_distance)continue;
+            RefPoint goal;worldToBodyCenter(ego,x,y,&goal.x,&goal.y);
+            const double chord_yaw=std::atan2(goal.y,goal.x);
+            for(double magnitude:{0.,0.20,-0.20,0.25,-0.25})
+              for(double blend:{1.,0.5,0.}) {
+                if(!best.empty() || std::chrono::steady_clock::now()>=deadline)break;
+                goal.yaw=wrapAngle(chord_yaw+blend*wrapAngle(observed_yaw-chord_yaw));
+                if(try_goal(goal,magnitude*cfg_.reference_measurement_sigma))break;
+              }
+          }
+        }
+      }
+    } else if(along>1e-5 && start<1e-4 && approaching && !startup_support) {
+      RefPoint first;first.yaw=beta;first.kappa=initial_kappa;
+      double best_peak=std::numeric_limits<double>::infinity();
       for(double end=0.;end<=std::min(available,0.8)+1e-6;end+=0.10) {
         const RefPoint goal=curve.at(start+end);const double length=hypot2(goal.x,goal.y);
         if(length<0.10)continue;
         const auto c=OriginSpline::segment(first,goal,length);
         std::vector<RefPoint> candidate;const int n=std::max(6,static_cast<int>(std::ceil(length/0.01)));
-        for(int i=0;i<=n;++i)candidate.push_back(OriginSpline::evaluate(c,double(i)/n,length));
+        double peak=0.;
+        for(int i=0;i<=n;++i) {
+          auto point=OriginSpline::evaluate(c,double(i)/n,length);
+          if(confirmed_startup)peak=std::max(peak,std::fabs(point.kappa));
+          candidate.push_back(point);
+        }
         for(double s=start+end+0.02;s<curve.knots.back().s;s+=0.02)candidate.push_back(curve.at(s));
         double cap,energy;
-        if(originFeasible(candidate,ego.delta,&cap,&energy) && cap>0.01) {
+        if((!confirmed_startup || peak<best_peak) &&
+           originFeasible(candidate,ego.delta,&cap,&energy) && cap>0.01) {
+          best_peak=peak;
           best=candidate;best_cap=cap;best_end=length;origin_mode_="initial_approach";
           approach_world.clear();
           approaching=false;
@@ -6161,7 +6911,7 @@ class PathGenerator {
             bodyCenterToWorld(ego,candidate[i].x,candidate[i].y,&h.x,&h.y);
             approach_world.push_back(h);
           }
-          break;
+          if(!confirmed_startup)break;
         }
       }
     } else if(std::fabs(along)<1e-5 && available>0.12) {
@@ -6200,9 +6950,17 @@ class PathGenerator {
       }
       // Full return and supported partial return share the same six boundary
       // conditions. Partial candidates never extend H beyond observed support.
-      for(int residual=0;residual<=(fixed_terminal?0:4);++residual) {
+      const int residual_count=fixed_terminal?1:(prefer_progress?9:5);
+      for(int residual=0;residual<residual_count;++residual) {
         const double fraction=0.25*residual;
-        const double terminal=fixed_terminal?terminal_offset:fraction*d0;
+        // When the nominal lateral error is near zero, fractions of that
+        // error cannot steer around an inconsistent tight knot. Short-prefix
+        // repair explores offsets only inside the existing measurement
+        // envelope. The final path still passes the independent corridor
+        // and actuator checks.
+        constexpr double offsets[]={-0.25,0.25,-0.50,0.50};
+        const double terminal=fixed_terminal?terminal_offset:
+            (residual<5?fraction*d0:offsets[residual-5]*cfg_.reference_measurement_sigma);
         for(double length:return_lengths) {
           const double c0=d0,c1=dp*length,c2=0.5*ddp*length*length;
           const double D=terminal-c0-c1-c2,V=-c1-2*c2,A=-2*c2;
@@ -6249,7 +7007,14 @@ class PathGenerator {
             if(std::string(rejected)=="initial_steer")++debug->origin_initial_rejects;
           }
           double candidate_span=support;
-          if(!full_feasible) {
+          if(near_field) {
+            // Limit each proposal before ranking it; the longest actuator-
+            // feasible proposal can leave the measured corridor earlier.
+            double measured_span=0.;
+            feasible_points=supported_prefix(candidate,feasible_points,&measured_span);
+          }
+          const bool clipped=!full_feasible || feasible_points<candidate.size();
+          if(clipped) {
             if(feasible_points<3)continue;
             candidate.resize(feasible_points);
             candidate_span=support*double(feasible_points-1)/n;
@@ -6257,10 +7022,35 @@ class PathGenerator {
             if(!originFeasible(candidate,ego.delta,&cap,&energy))continue;
           }
           if(cap<0.01)continue;
+          if(!follows_near_field(candidate))continue;
           const double end_u=clampValue(candidate_span/length,0.,1.);
           const double end_d=c0+end_u*(c1+end_u*(c2+end_u*(c3+end_u*(c4+end_u*c5))));
-          double temporal=0.;
-          if(previous_local.size()>2 && previous_distance<0.20) {
+          double temporal=0.,lateral_continuity=0.,steering_continuity=0.;
+          if(continuous_selection) {
+            size_t segment=1;
+            double arc=0.,next_arc=pointDistance(candidate[0].x,candidate[0].y,candidate[1].x,candidate[1].y);
+            for(size_t k=0;k<prior_samples.size();++k) {
+              const double probe=0.15*(k+1);
+              while(segment+1<candidate.size() && next_arc<probe) {
+                arc=next_arc;++segment;
+                next_arc+=pointDistance(candidate[segment-1].x,candidate[segment-1].y,
+                                         candidate[segment].x,candidate[segment].y);
+              }
+              if(next_arc<probe)break;
+              const auto& a=candidate[segment-1];const auto& b=candidate[segment];
+              const double u=(probe-arc)/std::max(1e-8,next_arc-arc);
+              const auto& prior=prior_samples[k];
+              const double dx=a.x+u*(b.x-a.x)-prior.x,dy=a.y+u*(b.y-a.y)-prior.y;
+              lateral_continuity+=square(-std::sin(prior.yaw)*dx+std::cos(prior.yaw)*dy);
+              if(compare_rolling_steering) {
+                // At the same spatial station, a step in the nominal steering
+                // preview is extra spatial slew. Use the same scale and units
+                // as the within-curve slew energy, without hard-locking a bend.
+                const double steer=std::atan(0.60*(a.kappa+u*(b.kappa-a.kappa)));
+                steering_continuity+=square(steer-prior_nominal_steering[k])/0.15;
+              }
+            }
+          } else if(previous_local.size()>2 && previous_distance<0.20) {
             for(double arc:{0.15,0.30,0.45,0.60}) {
               if(arc>support || previous_start+arc>previous_curve.knots.back().s)break;
               const auto p=point(arc),prior=previous_curve.at(previous_start+arc);
@@ -6268,17 +7058,62 @@ class PathGenerator {
             }
           }
           const double cost=error/double(n+1)+2*square(end_d)+
-              0.002*energy+0.20*temporal+0.02*std::max(0.,0.27-cap)+
-              (full_feasible?0.:1.0+0.10/(candidate_span+0.10));
-          if(cost<best_cost) {
+              0.002*(energy+steering_continuity)+0.20*temporal+0.02*std::max(0.,0.27-cap)+
+              (same_source?4.0:0.80)*lateral_continuity+
+              (clipped?1.0+0.10/(candidate_span+0.10):0.);
+          const bool enough_progress=candidate_span>=best_span-cfg_.raw_resample_ds;
+          if((!prefer_progress||enough_progress) &&
+             (cost<best_cost || (prefer_progress && candidate_span>best_span+cfg_.raw_resample_ds))) {
             best_cost=cost;best=candidate;best_cap=cap;best_end=std::min(length,candidate_span);
-            origin_prefix_only_=!full_feasible;
+            best_span=candidate_span;
+            best_terminal=terminal;
+            origin_prefix_only_=clipped;
             origin_residual_=end_d;
-            origin_mode_=!full_feasible?"history_return_prefix":
+            origin_mode_=clipped?"history_return_prefix":
                          (std::fabs(terminal)>1e-9?"history_return_partial":"history_return");
           }
         }
-        if(!best.empty() && best_cap>=0.27 && origin_mode_!="history_return_prefix")break;
+        if(!prefer_progress && !best.empty() && best_cap>=0.27 && origin_mode_!="history_return_prefix")break;
+      }
+    }
+    if(stopped_rejoin_minimum<=0. && !transport_joint_prefix && !supported_prefix_splice &&
+       near_field && std::fabs(along)<1e-5 &&
+       best_span<overlap_span+cfg_.raw_heading_min_distance) {
+      // Use the confirmed corridor instead of inheriting the raw bend's
+      // curvature derivatives through the Frenet normal-return chart.
+      RefPoint first;first.yaw=beta;first.kappa=initial_kappa;
+      for(double extra:{0.30,0.55,0.80}) {
+        const double exit=overlap_span+extra;
+        if(exit>available)break;
+        const auto anchor=curve.at(start+exit);
+        for(double offset:{0.,-0.5,0.5})for(double heading:{0.,0.5,1.}) {
+          const double normal=offset*cfg_.reference_measurement_sigma;
+          auto goal=anchor;
+          goal.x-=normal*std::sin(anchor.yaw);
+          goal.y+=normal*std::cos(anchor.yaw);
+          if(goal.x<=0.)continue;
+          const double chord=std::atan2(goal.y,goal.x);
+          goal.yaw=chord+heading*wrapAngle(anchor.yaw-chord);
+          goal.kappa=0.;
+          const double length=hypot2(goal.x,goal.y);
+          const int count=std::max(6,static_cast<int>(std::ceil(length/0.015)));
+          const auto coefficients=OriginSpline::segment(first,goal,length);
+          std::vector<RefPoint> candidate;
+          candidate.reserve(count+1);
+          for(int i=0;i<=count;++i)candidate.push_back(
+              OriginSpline::evaluate(coefficients,double(i)/count,length));
+          double arc,cap,energy;
+          std::size_t feasible=0;
+          originFeasible(candidate,ego.delta,&cap,&energy,&feasible);
+          feasible=supported_prefix(candidate,feasible,&arc);
+          if(feasible<3 || arc<std::max(best_span,overlap_span+cfg_.raw_heading_min_distance))continue;
+          candidate.resize(feasible);
+          if(!follows_near_field(candidate) || !originFeasible(candidate,ego.delta,&cap,&energy) ||
+             cap<0.01)continue;
+          best=std::move(candidate);best_cap=cap;best_span=best_end=arc;
+          best_terminal=std::numeric_limits<double>::quiet_NaN();
+          origin_mode_="history_return_prefix";origin_prefix_only_=true;
+        }
       }
     }
     if(best.empty()) {
@@ -6293,6 +7128,7 @@ class PathGenerator {
     origin_reject_="none";origin_rate_cap_=best_cap;origin_return_length_=best_end;
     origin_fit_length_=fit_length;origin_fit_limit_=fit_limit;
     origin_constrained_fit_=constrained_fit;
+    origin_terminal_offset_=prefer_progress?best_terminal:terminal_offset;
     origin_approach_world_=std::move(approach_world);origin_approaching_=approaching;
     origin_approach_provisional_=approach_provisional;
     if(startup_support)origin_mode_="initial_approach_tracking";
@@ -6300,6 +7136,7 @@ class PathGenerator {
     for(const auto& p:best) {
       HistoryPoint2D h;h.stamp=world.back().stamp;
       bodyCenterToWorld(ego,p.x,p.y,&h.x,&h.y);
+      h.heading=wrapAngle(p.yaw+ego.yaw);h.curvature=p.kappa;
       origin_previous_plan_world_.push_back(h);
     }
     if(!cached){origin_history_cache_=world;origin_history_cache_stamp_=ego.stamp;}
@@ -6345,6 +7182,7 @@ class PathGenerator {
     origin_prefix_only_=accepted.origin_prefix_only_;
     origin_fit_length_=accepted.origin_fit_length_;origin_fit_limit_=accepted.origin_fit_limit_;
     origin_constrained_fit_=accepted.origin_constrained_fit_;
+    origin_terminal_offset_=accepted.origin_terminal_offset_;
     current_candidate_source_stamp_=accepted.current_candidate_source_stamp_;
     current_geometry_source_stamp_=accepted.current_geometry_source_stamp_;
   }
@@ -6439,23 +7277,444 @@ class PathGenerator {
     return true;
   }
 
+  static double recoverySupportDistance(const LocalPathPoint& p,
+      const std::vector<HistoryPoint2D>& support,const EgoPose2D& ego) {
+    double x,y;bodyCenterToWorld(ego,p.x,p.y,&x,&y);
+    double distance=std::numeric_limits<double>::infinity();
+    for(size_t i=1;i<support.size();++i) {
+      const auto& a=support[i-1];const auto& b=support[i];
+      const double dx=b.x-a.x,dy=b.y-a.y;
+      const double u=clampValue(((x-a.x)*dx+(y-a.y)*dy)/
+          std::max(1e-12,dx*dx+dy*dy),0.,1.);
+      distance=std::min(distance,pointDistance(x,y,a.x+u*dx,a.y+u*dy));
+    }
+    return distance;
+  }
+
   double recoveryReferenceError(const std::vector<LocalPathPoint>& path,
       const std::vector<HistoryPoint2D>& support,const EgoPose2D& ego,double* mean=NULL) const {
     double peak=0.,sum=0.;
     for(const auto& p:path) {
-      double x,y;bodyCenterToWorld(ego,p.x,p.y,&x,&y);
-      double distance=std::numeric_limits<double>::infinity();
-      for(size_t i=1;i<support.size();++i) {
-        const auto& a=support[i-1];const auto& b=support[i];
-        const double dx=b.x-a.x,dy=b.y-a.y;
-        const double u=clampValue(((x-a.x)*dx+(y-a.y)*dy)/
-            std::max(1e-12,dx*dx+dy*dy),0.,1.);
-        distance=std::min(distance,pointDistance(x,y,a.x+u*dx,a.y+u*dy));
-      }
+      const double distance=recoverySupportDistance(p,support,ego);
       peak=std::max(peak,distance);sum+=square(distance);
     }
     if(mean)*mean=path.empty()?std::numeric_limits<double>::infinity():sum/path.size();
     return path.empty()?std::numeric_limits<double>::quiet_NaN():peak;
+  }
+
+  template<class Point>
+  static std::pair<double,double> referencePointAtArc(const std::vector<Point>& points,double s) {
+    for(size_t i=1;i<points.size();++i) {
+      const auto& a=points[i-1];const auto& b=points[i];
+      const double ds=pointDistance(a.x,a.y,b.x,b.y);
+      if(s<=ds && ds>1e-8)return std::make_pair(a.x+s/ds*(b.x-a.x),a.y+s/ds*(b.y-a.y));
+      s-=ds;
+    }
+    return std::make_pair(points.back().x,points.back().y);
+  }
+
+  static bool findSupportingEdge(const RefPoint& point,const std::vector<RefPoint>& history,
+                                 double tolerance,std::size_t* edge) {
+    const auto inside=[&](std::size_t i) {
+      const auto& a=history[i-1];const auto& b=history[i];
+      const double dx=b.x-a.x,dy=b.y-a.y;
+      const double u=clampValue(((point.x-a.x)*dx+(point.y-a.y)*dy)/
+          std::max(1e-12,dx*dx+dy*dy),0.,1.);
+      return square(point.x-a.x-u*dx)+square(point.y-a.y-u*dy)<=square(tolerance)+1e-12;
+    };
+    if(inside(*edge))return true;
+    for(std::size_t i=1;i<history.size();++i) {
+      if(inside(i)){*edge=i;return true;}
+    }
+    return false;
+  }
+
+  static double localSupportDistance(double x,double y,const std::vector<RefPoint>& measured) {
+    double distance2=std::numeric_limits<double>::infinity();
+    for(size_t i=1;i<measured.size();++i) {
+      const auto& a=measured[i-1];const auto& b=measured[i];
+      const double dx=b.x-a.x,dy=b.y-a.y;
+      const double u=clampValue(((x-a.x)*dx+(y-a.y)*dy)/std::max(1e-12,dx*dx+dy*dy),0.,1.);
+      distance2=std::min(distance2,square(x-a.x-u*dx)+square(y-a.y-u*dy));
+    }
+    return std::sqrt(distance2);
+  }
+
+  template<class Point>
+  bool sharedNearField(const std::vector<LocalPathPoint>& previous,
+                       const std::vector<Point>& candidate,double span,
+                       double tolerance,double middle_sample=0.45) const {
+    for(double arc:{0.15,0.30,middle_sample,0.60}) {
+      if(arc>span)break;
+      const auto a=referencePointAtArc(previous,arc),b=referencePointAtArc(candidate,arc);
+      if(pointDistance(a.first,a.second,b.first,b.second)>tolerance)return false;
+    }
+    return true;
+  }
+
+  double trimToMeasuredSupport(std::vector<LocalPathPoint>& path,PathGenerator& trial,
+      const std::vector<HistoryPoint2D>& measured,const EgoPose2D& ego,
+      double overlap_span,double overlap_corridor) const {
+    double covered=0.;
+    for(size_t i=0;i<path.size();++i) {
+      if(i)covered+=pointDistance(path[i-1].x,path[i-1].y,path[i].x,path[i].y);
+      const double corridor=covered<=overlap_span?overlap_corridor:cfg_.reference_measurement_sigma;
+      const double error=recoverySupportDistance(path[i],measured,ego);
+      if(!std::isfinite(error) || error>corridor+1e-9) {
+        path.resize(i);
+        trial.origin_previous_plan_world_.resize(i);
+        break;
+      }
+    }
+    return polylineLengthLocal(path);
+  }
+
+  static void describeLimitedPrefix(double span,PathGenerator& trial,TrackerDebugState& d) {
+    trial.origin_prefix_only_=d.origin_prefix_only=true;
+    trial.origin_mode_=d.origin_mode="history_return_prefix";
+    d.reference_span=d.candidate_reference_span=span;
+    trial.origin_return_length_=std::min(trial.origin_return_length_,span);
+    d.connector_span=trial.origin_return_length_;
+    d.suffix_span=d.suffix_after_join_span=std::max(0.,span-d.connector_span);
+  }
+
+  bool coversObservedGap(const std::vector<LocalPathPoint>& path,const RecoveryPlan& plan,
+                        const EgoPose2D& ego) const {
+    if(path.size()<3)return false;
+    std::vector<double> arc(path.size(),0.);
+    for(size_t i=1;i<path.size();++i)
+      arc[i]=arc[i-1]+pointDistance(path[i-1].x,path[i-1].y,path[i].x,path[i].y);
+    double previous=-1.;
+    const auto covers=[&](const HistoryPoint2D& point) {
+      double x,y;worldToBodyCenter(ego,point.x,point.y,&x,&y);
+      double best=std::numeric_limits<double>::infinity(),station=0.;
+      for(size_t i=1;i<path.size();++i) {
+        const auto& a=path[i-1];const auto& b=path[i];
+        const double dx=b.x-a.x,dy=b.y-a.y;
+        const double u=clampValue(((x-a.x)*dx+(y-a.y)*dy)/
+            std::max(1e-12,dx*dx+dy*dy),0.,1.);
+        const double error=pointDistance(x,y,a.x+u*dx,a.y+u*dy);
+        if(error<best) {best=error;station=arc[i-1]+u*(arc[i]-arc[i-1]);}
+      }
+      if(best>cfg_.reference_measurement_sigma || station+1e-6<previous)return false;
+      previous=station;
+      return true;
+    };
+    // Check the measured overlap around the gap on both sides. Upstream
+    // points already passed by the body origin have no remaining control role.
+    for(auto i=plan.prefix.end()-std::min<size_t>(plan.prefix.size(),4);i!=plan.prefix.end();++i) {
+      double x,y;worldToBodyCenter(ego,i->x,i->y,&x,&y);
+      if(x>=0. && !covers(*i))return false;
+    }
+    const double old_station=previous;
+    for(const auto& h:plan.bridge)if(!covers(h))return false;
+    return previous>old_station+cfg_.raw_heading_min_distance;
+  }
+
+  std::vector<LocalPathPoint> refineOrdinaryPrefix(const std::vector<RawTrailPoint>& trail,
+      const std::vector<LocalPathPoint>& incumbent,const EgoPose2D& ego,
+      TrackerDebugState* debug) const {
+    const auto reject=[debug](const char* reason) {
+      if(debug)debug->recovery_replan_trigger=reason;
+      return std::vector<LocalPathPoint>();
+    };
+    const double old_span=polylineLengthLocal(incumbent);
+    if(trail.empty() || incumbent.size()<3 || old_span<0.40 || old_span>=1.30) return {};
+    if(!origin_approach_world_.empty() || !trail.back().segment_id)return {};
+    // The resampled trail can end with an observation-derived provisional
+    // point. Use the confirmed samples directly, so that tail neither blocks
+    // repair nor becomes a freshness stamp for the repaired reference.
+    const auto confirmed=[&ego,&trail](const HistoryPoint2D& h) {
+      return !h.predicted && !h.execution_only && h.segment_id==trail.back().segment_id &&
+             !h.stamp.isZero() && h.stamp<=ego.stamp && !h.observation_support_start.isZero() &&
+             h.observation_support_start<=h.stamp;
+    };
+    auto end=recovery_observed_world_.end();
+    while(end!=recovery_observed_world_.begin() && std::prev(end)->predicted)--end;
+    if(end==recovery_observed_world_.begin() || !confirmed(*std::prev(end)))
+      return reject("ordinary_prefix_unconfirmed_support");
+    const ros::Time source=std::prev(end)->stamp;
+    if((ego.stamp-source).toSec()>cfg_.reference_stale_hold_time)
+      return reject("ordinary_prefix_stale_support");
+    const bool reuse=source==ordinary_refit_source_;
+    if(!reuse && source<=ordinary_refit_attempt_)return {};
+    auto begin=std::prev(end);
+    while(begin!=recovery_observed_world_.begin() && confirmed(*std::prev(begin)) &&
+          supportedHistoryEdge(*std::prev(begin),*begin))--begin;
+    if(std::distance(begin,end)<5)return reject("ordinary_prefix_discontinuous_support");
+    std::vector<HistoryPoint2D> measured(begin,end);
+    recomputeHeadingStable(measured,cfg_.raw_heading_min_distance,cfg_.raw_heading_hold_distance,
+                          cfg_.raw_max_heading_step);
+    offsetWorldPathAlongHeading(&measured,cfg_.lead_center_to_path_ref_offset);
+    auto fitting_support=resampleWorldByArcLength(measured,cfg_.raw_resample_ds);
+    ordinary_refit_attempt_=source;
+    PathGenerator trial(*this);
+    TrackerDebugState d=debug?*debug:TrackerDebugState();
+    const double near_corridor=std::max(cfg_.reference_measurement_sigma,
+        recoveryReferenceError(incumbent,measured,ego));
+    std::vector<LocalPathPoint> candidate;
+    double span=0.;
+    const auto supported_span=[&]() {
+      if(candidate.empty() || d.origin_cached || trial.current_geometry_source_stamp_!=source)return 0.;
+      return trimToMeasuredSupport(candidate,trial,measured,ego,old_span,near_corridor);
+    };
+    if(!reuse || !ordinary_refit_splice_) {
+      candidate=trial.buildOriginReference(makeRawTrailPoints(fitting_support),ego,&d,0.40,
+          cfg_.reference_measurement_sigma,reuse?ordinary_refit_offset_:
+            std::numeric_limits<double>::quiet_NaN(),true,!reuse,&incumbent,near_corridor);
+      span=supported_span();
+    }
+    bool spliced=false;
+    if(cfg_.ordinary_prefix_continuation && span<old_span+cfg_.raw_heading_min_distance) {
+      trial=*this;d=debug?*debug:TrackerDebugState();
+      candidate=trial.buildOriginReference(makeRawTrailPoints(measured),ego,&d,0.40,
+          cfg_.reference_measurement_sigma,std::numeric_limits<double>::quiet_NaN(),false,
+          false,&incumbent,near_corridor,0,true);
+      span=supported_span();spliced=true;
+    }
+    if(span<old_span+cfg_.raw_heading_min_distance)return reject("ordinary_prefix_no_progress");
+    if(!trial.boundRecoveryPrefix(span,ego.v,&d))return reject("ordinary_prefix_stop_margin");
+    if(!sharedNearField(incumbent,candidate,std::min(old_span,0.40),
+                        0.25*cfg_.reference_measurement_sigma,0.40))
+      return reject("ordinary_prefix_near_field_shift");
+    describeLimitedPrefix(span,trial,d);
+    ordinary_refit_source_=source;
+    ordinary_refit_offset_=trial.origin_terminal_offset_;
+    ordinary_refit_splice_=spliced;
+    adoptOriginPlan(trial);
+    // Keep the suffix classified as limited measured support, including
+    // when the fit reaches the end of its finite prediction window.
+    d.recovery_reason=spliced?"ordinary_supported_prefix_splice":"ordinary_supported_prefix_refit";
+    d.recovery_replanned=!reuse;
+    d.recovery_replan_trigger=reuse?"ordinary_prefix_fit_reused":"ordinary_prefix_measured_progress";
+    if(debug)*debug=d;
+    return candidate;
+  }
+
+  // A failed joint fit must not hold a braking-only execution forever when
+  // newer, continuously observed support can already satisfy the SAME origin,
+  // fit, actuator and stopping checks. This changes no cache timestamp unless
+  // a genuinely new measured candidate has been independently accepted.
+  std::vector<LocalPathPoint> refreshSupportedRecovery(const EgoPose2D& ego,
+      TrackerDebugState* debug,const std::vector<LocalPathPoint>* incumbent=nullptr) const {
+    const bool independent=canReanchorIndependentBend(recovery_plan_);
+    const bool corridor_search=incumbent && cfg_.joint_prefix_corridor_search &&
+        std::fabs(ego.v)<=kOriginSteeringRateMinSpeed;
+    if(!cfg_.supported_recovery_refresh || !recovery_active_ ||
+       (!recovery_plan_.joint_support && !(independent && corridor_search)) ||
+       recovery_plan_.from!=recovery_plan_.to ||
+       recovery_plan_.bridge.empty())return {};
+    const auto measured=recoverySegment(recovery_plan_.to);
+    auto rejected=[&](const char* reason) {
+      if(incumbent && debug)debug->recovery_replan_trigger=reason;
+      return std::vector<LocalPathPoint>();
+    };
+    if(measured.size()<3 || measured.back().stamp<=recovery_plan_.join_stamp ||
+       measured.back().stamp<=(incumbent?last_prefix_refresh_source_:current_geometry_source_stamp_) ||
+       (!independent && measured.front().stamp.toSec()>recovery_plan_.split_before) ||
+       measured.back().stamp.toSec()<recovery_plan_.split_after)return {};
+    std::size_t anchors=0;
+    bool measured_join=false;
+    for(std::size_t i=0;i<measured.size();++i) {
+      const auto& h=measured[i];
+      if(h.stamp.isZero() || h.stamp>ego.stamp || h.predicted || h.execution_only ||
+         !h.source_id || h.observation_support_start.isZero() ||
+         h.observation_support_start>h.stamp ||
+         (i && (h.stamp<=measured[i-1].stamp ||
+                !supportedHistoryEdge(measured[i-1],h))))return {};
+      const auto coincides=[&](const HistoryPoint2D& previous) {
+        return !previous.execution_only && !previous.predicted &&
+            previous.stamp==h.stamp && previous.source_id==h.source_id;
+      };
+      const HistoryPoint2D* anchor=nullptr;
+      const auto bridge=std::find_if(recovery_plan_.bridge.begin(),recovery_plan_.bridge.end(),coincides);
+      if(bridge!=recovery_plan_.bridge.end())anchor=&*bridge;
+      if(independent && !anchor) {
+        // The old left split can be pruned once passed. Require the real
+        // join and overlap with the accepted measured suffix instead.
+        const auto prior=std::find_if(recovery_support_world_.begin(),recovery_support_world_.end(),coincides);
+        if(prior!=recovery_support_world_.end() && prior->stamp>=recovery_plan_.join_stamp)
+          anchor=&*prior;
+      }
+      if(anchor) {
+        // A causal re-estimate may correct old support within the already
+        // configured observation scale. A changed object/large displacement
+        // cannot use this path to escape association or geometry recovery.
+        if(pointDistance(anchor->x,anchor->y,h.x,h.y)>
+           cfg_.reference_measurement_sigma)return {};
+        ++anchors;
+        measured_join=measured_join || (h.stamp==recovery_plan_.join_stamp &&
+            h.source_id==recovery_plan_.bridge.back().source_id);
+      }
+    }
+    if(anchors<3)return rejected("short_prefix_refit_insufficient_anchors");
+    if(independent && !measured_join)return rejected("short_prefix_refit_measured_join_missing");
+    // Re-anchor only at the low-speed boundary used by the origin model.
+    // Replacing a rolling bridge early can retire its anchor before the next
+    // observed segment can be joined.
+    if(corridor_search && (ego.stamp-measured.back().stamp).toSec()>cfg_.reference_stale_hold_time)
+      return rejected("short_prefix_refit_stale_support");
+    PathGenerator trial(*this);TrackerDebugState d=debug?*debug:TrackerDebugState();
+    std::vector<HistoryPoint2D> support=measured;
+    if(incumbent)last_prefix_refresh_source_=measured.back().stamp;
+    if(incumbent && !corridor_search) {
+      // Short measurement chords amplify curvature. Collapse only
+      // continuously observed forward chords within the measurement bound,
+      // keeping both endpoints and their actual acquisition times.
+      const double tolerance=0.25*cfg_.reference_measurement_sigma;
+      support.clear();
+      support.push_back(measured.front());
+      for(size_t first=0;first+1<measured.size();) {
+        size_t end=first+1;
+        for(size_t j=end+1;j<measured.size();++j) {
+          const auto& a=measured[first];const auto& b=measured[j];
+          const double dx=b.x-a.x,dy=b.y-a.y,span=hypot2(dx,dy);
+          if(span<1e-5 || span>0.30 || !supportedHistoryEdge(a,b))break;
+          bool ordered=true;
+          double last_projection=0.;
+          for(size_t k=first+1;k<j;++k) {
+            const double x=measured[k].x-a.x,y=measured[k].y-a.y;
+            const double projection=(dx*x+dy*y)/span;
+            if(projection<last_projection || projection>span ||
+               std::fabs(dx*y-dy*x)>tolerance*span){ordered=false;break;}
+            last_projection=projection;
+          }
+          if(!ordered)break;
+          end=j;
+        }
+        support.push_back(measured[end]);
+        first=end;
+      }
+    }
+    const double overlap_span=incumbent?polylineLengthLocal(*incumbent):0.;
+    const double overlap_corridor=corridor_search?std::max(cfg_.reference_measurement_sigma,
+        recoveryReferenceError(*incumbent,measured,ego)):0.;
+    std::vector<LocalPathPoint> path;
+    if(!independent) {
+      const auto trail=makeRawTrailPoints(corridor_search?
+          resampleWorldByArcLength(support,cfg_.raw_resample_ds):support);
+      path=incumbent?
+          trial.buildOriginReference(trail,ego,&d,0.55,cfg_.reference_measurement_sigma,
+                                     std::numeric_limits<double>::quiet_NaN(),true,true,
+                                     corridor_search?incumbent:nullptr,overlap_corridor):
+          trial.buildOriginCandidate(trail,{},ego,&d);
+    }
+    const auto geometry_valid=[&]() {
+      return !path.empty() && !d.origin_cached && std::isfinite(d.origin_fit_adjust) &&
+          d.origin_fit_adjust<=std::max(0.015,cfg_.reference_measurement_sigma)+1e-9 &&
+          trial.current_geometry_source_stamp_==measured.back().stamp;
+    };
+    double span=geometry_valid()&&corridor_search?
+        trimToMeasuredSupport(path,trial,measured,ego,overlap_span,overlap_corridor):0.;
+    bool spliced=false,reanchored=false;
+    if(!independent && cfg_.retain_joint_prefix && cfg_.joint_supported_continuation && corridor_search &&
+       recovery_plan_.split_reason=="curvature" &&
+       span<overlap_span+cfg_.raw_heading_min_distance) {
+      // Inside one confirmed segment, the constrained return can inherit a
+      // sharp short-chord curvature beyond a valid near-field prefix. Keep
+      // that prefix and fit its suffix to ordered observed anchors. A heading
+      // split or observation gap still uses the association recovery path.
+      trial=*this;d=debug?*debug:TrackerDebugState();
+      path=trial.buildOriginReference(makeRawTrailPoints(measured),ego,&d,0.55,
+          cfg_.reference_measurement_sigma,std::numeric_limits<double>::quiet_NaN(),false,
+          false,incumbent,overlap_corridor,0,true,false,true);
+      span=geometry_valid()?trimToMeasuredSupport(path,trial,measured,ego,overlap_span,overlap_corridor):0.;
+      spliced=true;
+    }
+    const bool same_segment_bend=recovery_plan_.split_reason=="curvature" ||
+        recovery_plan_.split_reason=="heading_jump";
+    if(cfg_.durable_measured_rejoin && cfg_.retain_joint_prefix && corridor_search &&
+       same_segment_bend && span<overlap_span+cfg_.raw_heading_min_distance) {
+      double minimum=overlap_span+cfg_.raw_heading_min_distance;
+      // The old splice can be approaching expiry. A newly fitted,
+      // independently supported path may replace it at comparable length.
+      if(joint_prefix_spliced_ && !joint_prefix_world_.empty() &&
+         joint_prefix_world_.back().stamp<measured.back().stamp &&
+         current_geometry_source_stamp_==joint_prefix_world_.back().stamp &&
+         overlap_span>=6.*cfg_.raw_heading_min_distance)
+        minimum=overlap_span;
+      PathGenerator alternative(*this);
+      TrackerDebugState alternative_debug=debug?*debug:TrackerDebugState();
+      auto fitted=alternative.buildOriginReference(makeRawTrailPoints(measured),ego,&alternative_debug,
+          0.55,cfg_.reference_measurement_sigma,std::numeric_limits<double>::quiet_NaN(),
+          false,false,incumbent,0.,0,false,false,false,minimum);
+      if(!fitted.empty() && !alternative_debug.origin_cached &&
+         alternative.current_geometry_source_stamp_==measured.back().stamp) {
+        trial.adoptOriginPlan(alternative);path=std::move(fitted);d=alternative_debug;
+        span=polylineLengthLocal(path);spliced=true;reanchored=true;
+      }
+    }
+    if(!geometry_valid())
+      return rejected("short_prefix_refit_geometry_invalid");
+    if(corridor_search) {
+      // Keep the supported part of a useful candidate. A remote invalid
+      // point cannot invalidate a longer feasible stopping prefix.
+      if(!reanchored && span<overlap_span+cfg_.raw_heading_min_distance)
+        return rejected("short_prefix_refit_no_feasible_extension");
+      if(!reanchored && !sharedNearField(*incumbent,path,std::min(overlap_span,0.40),
+                         0.25*cfg_.reference_measurement_sigma,0.40))
+        return rejected("short_prefix_refit_near_field_discontinuity");
+      describeLimitedPrefix(span,trial,d);
+    }
+    if(trial.origin_prefix_only_ &&
+       !trial.boundRecoveryPrefix(polylineLengthLocal(path),ego.v,&d))return {};
+    if(!std::isfinite(trial.origin_rate_cap_) || trial.origin_rate_cap_<=0.)return {};
+    const double history_error=recoveryReferenceError(path,measured,ego);
+    if(spliced && !reanchored && (!std::isfinite(history_error) ||
+                   history_error>cfg_.reference_measurement_sigma+1e-9))
+      return rejected("short_prefix_splice_measurement_deviation");
+    if(incumbent && !corridor_search) {
+      const double span=polylineLengthLocal(path),old_span=polylineLengthLocal(*incumbent);
+      if(span<old_span+cfg_.raw_heading_min_distance)
+        return rejected("short_prefix_refit_no_feasible_extension");
+      if(!std::isfinite(history_error) ||
+         history_error>std::max(cfg_.reference_measurement_sigma,
+                               recoveryReferenceError(*incumbent,measured,ego))+1e-9)
+        return rejected("short_prefix_refit_measurement_deviation");
+      if(!sharedNearField(*incumbent,path,old_span,0.25*cfg_.reference_measurement_sigma))
+        return rejected("short_prefix_refit_near_field_discontinuity");
+    }
+    RecoveryPlan refreshed=recovery_plan_;
+    if(spliced) {
+      // An executable suffix is not a new measured bridge or a new warm
+      // start for the constrained origin-return solver. Keep those when the
+      // fixed executable continuation can no longer pass its pose checks.
+      trial.origin_fit_length_=origin_fit_length_;
+      trial.origin_fit_limit_=origin_fit_limit_;
+      trial.origin_return_length_=origin_return_length_;
+      trial.origin_terminal_offset_=origin_terminal_offset_;
+      trial.origin_constrained_fit_=origin_constrained_fit_;
+    }else{
+      refreshed.prefix.clear();refreshed.bridge=support;
+      refreshed.join_stamp=measured.back().stamp;
+      refreshed.progress_conditioned=incumbent!=nullptr;
+    }
+    adoptOriginPlan(trial);recovery_plan_=std::move(refreshed);
+    if(cfg_.retain_joint_prefix && incumbent && corridor_search) {
+      joint_prefix_world_=origin_previous_plan_world_;
+      joint_prefix_plan_join_=recovery_plan_.join_stamp;
+      joint_prefix_spliced_=spliced;
+      joint_prefix_reanchored_=reanchored;
+    }
+    recovery_support_world_=measured;
+    d.recovery_active=true;d.recovery_braking_only=false;d.recovery_replanned=true;
+    d.recovery_replan_trigger=incumbent?"short_prefix_measured_progress":"new_continuous_measured_support";
+    d.recovery_reason=independent?"independent_measured_reanchor":
+        reanchored?"joint_measured_reanchor":
+        (spliced?"joint_supported_continuation":"joint_supported_refresh");
+    d.recovery_from_segment=recovery_plan_.from;d.recovery_to_segment=recovery_plan_.to;
+    d.geometry_split_before=recovery_plan_.split_before;d.geometry_split_after=recovery_plan_.split_after;
+    d.execution_repair_kind=independent?"continuous_geometry":"continuous_joint_support";
+    d.recovery_candidate_reject="none";
+    d.joint_support_points=static_cast<int>(measured.size());
+    d.joint_support_span=0.;
+    for(std::size_t i=1;i<measured.size();++i)d.joint_support_span+=
+        pointDistance(measured[i-1].x,measured[i-1].y,measured[i].x,measured[i].y);
+    d.joint_history_error_max=history_error;
+    d.origin_mode="refreshed_"+trial.origin_mode_;
+    origin_mode_=d.origin_mode;
+    if(debug)*debug=d;
+    return path;
   }
 
   std::vector<LocalPathPoint> brakingReference(const EgoPose2D& ego,TrackerDebugState* debug) const {
@@ -6511,15 +7770,115 @@ class PathGenerator {
       debug->joint_support_span=debug->joint_history_error_max=0.;
     }
     auto acceptRecovery=[&](const RecoveryPlan& plan,const std::vector<HistoryPoint2D>& next,
-                            bool terminal_search=false) {
+                            bool terminal_search=false,const std::vector<LocalPathPoint>* incumbent=nullptr,
+                            bool defer_retirement=false) {
       if(debug)++debug->recovery_origin_attempts;
       PathGenerator trial(*this);TrackerDebugState d=debug?*debug:TrackerDebugState();
       const auto support=recoverySupport(plan,next);
       const auto support_trail=makeRawTrailPoints(support);
-      auto path=trial.buildOriginCandidate(support_trail,raw,ego_now,&d);
+      const bool retain_measured=plan.joint_support ||
+          (joint_prefix_reanchored_ && canReanchorIndependentBend(plan));
+      const ros::Time retained_source=joint_prefix_world_.empty()?ros::Time():joint_prefix_world_.back().stamp;
+      bool new_retained_support=false;
+      if(cfg_.durable_measured_rejoin && joint_prefix_spliced_ &&
+         retain_measured && plan.from==plan.to && !retained_source.isZero() &&
+         !next.empty() && next.back().stamp>retained_source &&
+         next.back().stamp<=ego_now.stamp &&
+         (ego_now.stamp-next.back().stamp).toSec()<=cfg_.reference_stale_hold_time) {
+        // Only renew a certificate when a later measurement belongs to the
+        // very same continuous support and all intervening edges are present.
+        const auto previous=std::find_if(next.begin(),next.end(),[&](const HistoryPoint2D& h) {
+          return h.stamp==retained_source;
+        });
+        new_retained_support=previous!=next.end();
+        if(new_retained_support)for(auto it=previous+1;it!=next.end();++it) {
+          if(!it->source_id || it->predicted || it->execution_only ||
+             it->observation_support_start.isZero() || it->observation_support_start>it->stamp ||
+             !supportedHistoryEdge(*(it-1),*it)) {new_retained_support=false;break;}
+        }
+      }
+      const bool use_retained=cfg_.retain_joint_prefix && !terminal_search &&
+          recovery_active_ && retain_measured && plan.from==recovery_plan_.from &&
+          plan.to==recovery_plan_.to && plan.join_stamp==joint_prefix_plan_join_ &&
+          plan.join_stamp==recovery_plan_.join_stamp && !joint_prefix_world_.empty() &&
+          joint_prefix_world_.back().stamp<=ego_now.stamp &&
+          ((ego_now.stamp-joint_prefix_world_.back().stamp).toSec()<=cfg_.reference_stale_hold_time ||
+           new_retained_support);
+      const bool try_same_fit=cfg_.recovery_progress_continuity && !terminal_search &&
+          recovery_active_ && plan.joint_support && plan.join_stamp==recovery_plan_.join_stamp &&
+          !support.empty() && (plan.progress_conditioned || support.back().stamp==current_geometry_source_stamp_);
+      std::vector<LocalPathPoint> path;
+      if(plan.observed_gap_fit) {
+        const bool continuing=recovery_active_ && recovery_plan_.observed_gap_fit &&
+            recovery_plan_.from==plan.from && recovery_plan_.to==plan.to;
+        if((!continuing && std::fabs(ego_now.v)>kOriginSteeringRateMinSpeed) ||
+           support.empty() || support.back().stamp>ego_now.stamp ||
+           (ego_now.stamp-support.back().stamp).toSec()>cfg_.reference_stale_hold_time)return path;
+        path=trial.buildOriginReference(support_trail,ego_now,&d,0.10,0.015,
+            std::numeric_limits<double>::quiet_NaN(),false,false,
+            cfg_.recovery_interpolate_gap_goal?incumbent:nullptr,
+            cfg_.recovery_interpolate_gap_goal?cfg_.reference_measurement_sigma:0.,plan.prefix.size());
+        if(path.empty() || d.origin_cached || !coversObservedGap(path,plan,ego_now)) {
+          if(debug)debug->recovery_replan_trigger=path.empty()?
+              d.origin_candidate_reject:"observed_gap_fit_outside_support";
+          return std::vector<LocalPathPoint>();
+        }
+      }
+      if(!plan.observed_gap_fit && path.empty() && try_same_fit)
+        path=trial.buildOriginReference(support_trail,ego_now,&d,origin_fit_length_,origin_fit_limit_,
+                                        origin_terminal_offset_,origin_constrained_fit_);
+      const bool reused_fit=!path.empty() && !d.origin_cached &&
+          (!trial.origin_prefix_only_ || trial.boundRecoveryPrefix(polylineLengthLocal(path),ego_now.v,NULL));
+      if(!reused_fit && !plan.observed_gap_fit) {
+        if(try_same_fit){trial=*this;d=debug?*debug:TrackerDebugState();}
+        path=trial.buildOriginCandidate(support_trail,raw,ego_now,&d);
+      }
       const bool usable=!path.empty() && !d.origin_cached &&
           (!trial.origin_prefix_only_ || trial.boundRecoveryPrefix(polylineLengthLocal(path),ego_now.v,NULL));
-      if(plan.joint_support && ((usable && trial.origin_prefix_only_) || (!usable && terminal_search))) {
+      bool retained_curvature=false;
+      if(cfg_.joint_supported_continuation && cfg_.retain_joint_prefix &&
+         !usable && !path.empty() && !d.origin_cached && trial.origin_prefix_only_ &&
+         !recovery_active_ && !incumbent && plan.joint_support && plan.from==plan.to &&
+         plan.split_reason=="curvature" && ego_now.v>kOriginSteeringRateMinSpeed &&
+         origin_prefix_only_ && origin_rate_cap_>0. &&
+         !ordinary_refit_source_.isZero() && current_geometry_source_stamp_==ordinary_refit_source_ &&
+         !support.empty() && !origin_history_cache_.empty() &&
+         origin_history_cache_.back().segment_id==plan.to &&
+         support.back().stamp>=current_geometry_source_stamp_ &&
+         current_geometry_source_stamp_<=ego_now.stamp &&
+         (ego_now.stamp-current_geometry_source_stamp_).toSec()<=cfg_.reference_stale_hold_time &&
+         !origin_previous_stamp_.isZero() && origin_previous_stamp_<ego_now.stamp &&
+         (ego_now.stamp-origin_previous_stamp_).toSec()<=0.12) {
+        // An ordinary measured splice can remain executable even when the
+        // newly selected curvature section offers only a braking prefix.
+        // Test the existing re-anchor lengths at the current actual speed.
+        // A short re-anchor can satisfy steer magnitude yet fail steer rate.
+        double cap=0.,span=0.;
+        const auto transported=transportJointPrefix(ego_now,std::atan(0.5*std::tan(ego_now.delta)),
+            d.origin_initial_kappa,origin_previous_plan_world_,&cap,&span,ego_now.v);
+        if(!transported.empty() && span>=polylineLengthLocal(path)+cfg_.raw_heading_min_distance) {
+          std::vector<LocalPathPoint> candidate;
+          candidate.reserve(transported.size());
+          for(const auto& p:transported)candidate.push_back(localPathPointFromRef(p));
+          const double error=recoveryReferenceError(candidate,support,ego_now);
+          if(std::isfinite(error) && error<=cfg_.reference_measurement_sigma+1e-9) {
+            const double old_cap=trial.origin_rate_cap_;
+            trial.origin_rate_cap_=std::min(cap,origin_rate_cap_);
+            if(trial.boundRecoveryPrefix(span,ego_now.v,nullptr)) {
+              trial.current_geometry_source_stamp_=current_geometry_source_stamp_;
+              trial.origin_previous_plan_world_=localReferenceToWorld(candidate,ego_now);
+              for(auto& point:trial.origin_previous_plan_world_)
+                point.stamp=current_geometry_source_stamp_;
+              describeLimitedPrefix(span,trial,d);
+              d.origin_rate_cap=trial.origin_rate_cap_;
+              path=std::move(candidate);
+              retained_curvature=true;
+            }else trial.origin_rate_cap_=old_cap;
+          }
+        }
+      }
+      if(plan.joint_support && !retained_curvature && !reused_fit &&
+         ((usable && trial.origin_prefix_only_) || (!usable && terminal_search))) {
         // The original return only permits a residual between zero and d0.
         // A true S reversal may need a temporary opposite-side offset. Search
         // within the existing measurement scale, without extending H or
@@ -6542,6 +7901,111 @@ class PathGenerator {
                                             error<best_error-1e-10));
           if(better) {
             trial.adoptOriginPlan(alternative);path=std::move(fitted);d=alternative_debug;best_error=error;
+          }
+        }
+      }
+      bool retained=false;
+      if(use_retained) {
+        PathGenerator alternate(*this);
+        TrackerDebugState candidate_debug=debug?*debug:TrackerDebugState();
+        auto candidate=alternate.buildOriginReference(makeRawTrailPoints(plan.bridge),ego_now,&candidate_debug,
+            origin_fit_length_,origin_fit_limit_,origin_terminal_offset_,origin_constrained_fit_,
+            false,nullptr,0.,0,false,true);
+        const double span=polylineLengthLocal(candidate);
+        const bool longer=span>polylineLengthLocal(path)+1e-6;
+        // A retained splice is still an execution curve. Audit the complete
+        // transported geometry against this cycle's measured segment.
+        bool corridor_valid=true;
+        if(longer && joint_prefix_spliced_) {
+          const auto& corridor=new_retained_support?next:support;
+          const double origin_error=joint_prefix_reanchored_?
+              recoverySupportDistance(LocalPathPoint(),corridor,ego_now):0.;
+          double arc=0.;
+          for(size_t i=0;i<candidate.size();++i) {
+            const auto& p=candidate[i];
+            if(i)arc+=pointDistance(p.x,p.y,candidate[i-1].x,candidate[i-1].y);
+            const double distance=recoverySupportDistance(p,corridor,ego_now);
+            if(distance<=cfg_.reference_measurement_sigma+1e-9)continue;
+            if(!joint_prefix_reanchored_ || path.empty() || arc>0.15) {
+              corridor_valid=false;break;
+            }
+            const auto old=referencePointAtArc(path,arc);
+            if(origin_error>1.25*cfg_.reference_measurement_sigma) {
+              corridor_valid=false;break;
+            }
+            LocalPathPoint q;q.x=old.first;q.y=old.second;
+            if(pointDistance(p.x,p.y,q.x,q.y)>0.25*cfg_.reference_measurement_sigma ||
+               distance>std::max(cfg_.reference_measurement_sigma,origin_error)+1e-6) {
+              corridor_valid=false;break;
+            }
+          }
+        }
+        if(longer && corridor_valid &&
+           alternate.boundRecoveryPrefix(span,ego_now.v,nullptr)) {
+          // Keep the search's return length as its warm state. The transported
+          // curve's full remaining arc is not that fit parameter.
+          alternate.origin_return_length_=trial.origin_return_length_;
+          alternate.current_geometry_source_stamp_=new_retained_support?
+              next.back().stamp:retained_source;
+          for(auto& point:alternate.origin_previous_plan_world_)
+            point.stamp=alternate.current_geometry_source_stamp_;
+          trial.adoptOriginPlan(alternate);path=std::move(candidate);d=candidate_debug;retained=true;
+        }
+      }
+      bool retained_rolling=false;
+      const auto source=trial.current_geometry_source_stamp_;
+      if(cfg_.retain_rolling_joint_curve && !terminal_search && incumbent==nullptr &&
+         recovery_active_ && plan.joint_support && !plan.observed_gap_fit &&
+         plan.from==recovery_plan_.from && plan.to==recovery_plan_.to &&
+         plan.join_stamp==recovery_plan_.join_stamp && ego_now.v>kOriginSteeringRateMinSpeed &&
+         !path.empty() && trial.origin_prefix_only_ && !d.origin_cached && origin_rate_cap_>0. &&
+         !source.isZero() && source==current_geometry_source_stamp_ &&
+         source<=ego_now.stamp && (ego_now.stamp-source).toSec()<=cfg_.reference_stale_hold_time &&
+         !origin_previous_stamp_.isZero() && origin_previous_stamp_<ego_now.stamp &&
+         (ego_now.stamp-origin_previous_stamp_).toSec()<=0.12 &&
+         origin_previous_plan_world_.size()>=3 &&
+         std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-recovery_started).count()<12.) {
+        const double minimum=polylineLengthLocal(path)+cfg_.raw_heading_min_distance;
+        double previous_span=0.;
+        for(std::size_t i=1;i<origin_previous_plan_world_.size();++i) {
+          const auto& a=origin_previous_plan_world_[i-1];const auto& b=origin_previous_plan_world_[i];
+          previous_span+=pointDistance(a.x,a.y,b.x,b.y);
+        }
+        if(previous_span>=minimum) {
+          double cap=0.,span=0.;
+          const auto transported=transportJointPrefix(ego_now,std::atan(0.5*std::tan(ego_now.delta)),
+              d.origin_initial_kappa,origin_previous_plan_world_,&cap,&span);
+          if(!transported.empty() && span>=minimum) {
+            std::vector<LocalPathPoint> candidate;
+            candidate.reserve(transported.size());
+            for(const auto& p:transported)candidate.push_back(localPathPointFromRef(p));
+            // The immutable reference corridor in transportJointPrefix checks
+            // the whole previously accepted curve. Re-audit the measured
+            // corridor too because fixed-lag history can adjust at equal stamp.
+            double allowed_error=cfg_.reference_measurement_sigma;
+            for(const auto& p:origin_previous_plan_world_) {
+              LocalPathPoint local;worldToBodyCenter(ego_now,p.x,p.y,&local.x,&local.y);
+              allowed_error=std::max(allowed_error,recoverySupportDistance(local,support,ego_now));
+            }
+            const double error=recoveryReferenceError(candidate,support,ego_now);
+            if(std::isfinite(error) && error<=allowed_error+1e-6) {
+              const double original_cap=trial.origin_rate_cap_;
+              trial.origin_rate_cap_=std::min(cap,origin_rate_cap_);
+              if(trial.boundRecoveryPrefix(span,ego_now.v,nullptr)) {
+                // Geometry is execution state, never a new observation.
+                // Preserve the solver's warm return length and old source age.
+                trial.origin_previous_plan_world_.clear();
+                for(const auto& p:transported) {
+                  HistoryPoint2D h;h.stamp=source;
+                  bodyCenterToWorld(ego_now,p.x,p.y,&h.x,&h.y);
+                  h.heading=wrapAngle(p.yaw+ego_now.yaw);h.curvature=p.kappa;
+                  trial.origin_previous_plan_world_.push_back(h);
+                }
+                d.reference_span=d.candidate_reference_span=span;
+                d.origin_rate_cap=trial.origin_rate_cap_;
+                path=std::move(candidate);retained_rolling=true;
+              }else trial.origin_rate_cap_=original_cap;
+            }
           }
         }
       }
@@ -6579,19 +8043,46 @@ class PathGenerator {
         }
         return std::vector<LocalPathPoint>();
       }
+      if(incumbent) {
+        const double old_span=polylineLengthLocal(*incumbent);
+        const auto source=trial.current_geometry_source_stamp_;
+        if(d.recovery_braking_only || source<=current_geometry_source_stamp_ || source>ego_now.stamp ||
+           (ego_now.stamp-source).toSec()>cfg_.reference_stale_hold_time ||
+           polylineLengthLocal(path)<old_span+cfg_.raw_heading_min_distance ||
+           !sharedNearField(*incumbent,path,std::min(old_span,0.40),
+                            0.25*cfg_.reference_measurement_sigma,0.40))return std::vector<LocalPathPoint>();
+      }
+      if(defer_retirement && (d.recovery_braking_only ||
+          trial.current_geometry_source_stamp_<current_geometry_source_stamp_ ||
+          trial.current_geometry_source_stamp_>ego_now.stamp ||
+          (ego_now.stamp-trial.current_geometry_source_stamp_).toSec()>cfg_.reference_stale_hold_time))
+        return std::vector<LocalPathPoint>();
       adoptOriginPlan(trial);recovery_plan_=plan;recovery_active_=true;
+      if(retained && new_retained_support)joint_prefix_world_=origin_previous_plan_world_;
+      if(retained_curvature) {
+        joint_prefix_world_=origin_previous_plan_world_;
+        joint_prefix_plan_join_=plan.join_stamp;
+        joint_prefix_spliced_=true;
+        joint_prefix_reanchored_=false;
+      }
       recovery_support_world_=support;
       origin_mode_=(plan.geometry?"repaired_":"reacquired_")+origin_mode_;
       d.origin_mode=origin_mode_;d.recovery_active=true;
       d.recovery_reason=trial.origin_prefix_only_?"executable_recovery_prefix":
           (plan.geometry?"geometry_execution_repair":"execution_recovery");
+      if(plan.observed_gap_fit)d.recovery_reason="observed_gap_recovery";
       if(plan.joint_support)d.recovery_reason=trial.origin_prefix_only_?
           "joint_execution_prefix":"joint_execution_return";
+      if(retained)d.recovery_reason="joint_retained_prefix";
+      if(retained && new_retained_support)d.recovery_reason="joint_recertified_prefix";
+      if(retained_rolling)d.recovery_reason="joint_retained_rolling_curve";
+      if(retained_curvature)d.recovery_reason="measured_ordinary_prefix_retained";
       if(d.recovery_braking_only)d.recovery_reason="execution_prefix_braking";
       d.recovery_from_segment=plan.from;d.recovery_to_segment=plan.to;
       d.recovery_gap=plan.gap;d.recovery_gap_time=plan.dt;d.recovery_fit_error=plan.error;
       d.execution_repair_kind=plan.joint_support?"continuous_joint_support":
-          (plan.geometry?"continuous_geometry":"reacquisition");
+          (plan.geometry?"continuous_geometry":
+           (plan.chained_reacquisition?"chained_reacquisition":"reacquisition"));
       if(plan.geometry){d.geometry_split_reason=plan.split_reason;
         d.geometry_split_before=plan.split_before;d.geometry_split_after=plan.split_after;}
       if(debug)*debug=d;
@@ -6603,17 +8094,95 @@ class PathGenerator {
     if(recovery_active_) {
       const auto next=recoverySegment(recovery_plan_.to);
       if(!next.empty()) {
-        const auto& join=recovery_plan_.bridge.back();
+        const auto& join=recovery_plan_.observed_gap_fit?recovery_plan_.bridge.front():recovery_plan_.bridge.back();
         double x,y;worldToBodyCenter(ego_now,join.x,join.y,&x,&y);
         const double yaw=wrapAngle(join.heading-ego_now.yaw);
         const bool reached=x*std::cos(yaw)+y*std::sin(yaw)<-0.02 && std::fabs(-x*std::sin(yaw)+y*std::cos(yaw))<0.30;
         if(reached) {
+          // Crossing a join is vehicle progress, not evidence that the
+          // ordinary path builder has caught up with the accepted source.
+          // A fresh, fully revalidated joint remainder prevents a fallback
+          // to an older pre-join reference while the measured source catches up.
+          if(cfg_.retain_rolling_joint_curve && recovery_plan_.joint_support &&
+             !raw_trail.empty() && !current_geometry_source_stamp_.isZero() &&
+             raw_trail.back().stamp<current_geometry_source_stamp_ &&
+             next.back().stamp>=current_geometry_source_stamp_ &&
+             current_geometry_source_stamp_<=ego_now.stamp &&
+             (ego_now.stamp-current_geometry_source_stamp_).toSec()<=cfg_.reference_stale_hold_time &&
+             std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-recovery_started).count()<12.) {
+            const auto previous_debug=debug?*debug:TrackerDebugState();
+            auto remainder=acceptRecovery(recovery_plan_,next,false,nullptr,true);
+            if(!remainder.empty()) {
+              if(debug)debug->recovery_replan_trigger="joint_retirement_waits_for_current_raw_source";
+              return remainder;
+            }
+            if(debug)*debug=previous_debug;
+          }
           recovery_active_=false;recovery_support_world_.clear();
+          joint_prefix_world_.clear();joint_prefix_plan_join_=ros::Time();
+          joint_prefix_spliced_=false;
+          joint_prefix_reanchored_=false;
           recovery_fit_cache_=RecoveryFitCache();geometry_fit_cache_=RecoveryFitCache();recovery_attempt_cursor_=0;
           if(debug)debug->recovery_reason="measured_segment_reached";
         } else {
           auto path=acceptRecovery(recovery_plan_,next);
-          if(!path.empty())return path;
+          if(!path.empty()){
+            if(cfg_.successor_after_stale_recovery && recovery_plan_.joint_support &&
+               std::abs(ego_now.v)<=kOriginSteeringRateMinSpeed && polylineLengthLocal(path)<1.30 &&
+               !current_geometry_source_stamp_.isZero() &&
+               (ego_now.stamp-current_geometry_source_stamp_).toSec()>cfg_.reference_stale_hold_time &&
+               !recovery_observed_world_.empty()) {
+              const auto newest=std::find_if(recovery_observed_world_.rbegin(),recovery_observed_world_.rend(),
+                  [](const HistoryPoint2D& point){return !point.predicted&&!point.execution_only;});
+              if(newest!=recovery_observed_world_.rend() && newest->segment_id>recovery_plan_.to &&
+                 newest->stamp<=ego_now.stamp && newest->stamp>=last_successor_attempt_ &&
+                 (ego_now.stamp-newest->stamp).toSec()<=cfg_.reference_stale_hold_time &&
+                 std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-recovery_started).count()<12.) {
+                if(newest->stamp>last_successor_attempt_){
+                  last_successor_attempt_=newest->stamp;
+                  successor_attempt_count_=0;
+                }
+                if(successor_attempt_count_<4){
+                  // Allow the bounded bridge search to finish over several
+                  // timer ticks even when no additional point is committed.
+                  ++successor_attempt_count_;
+                  const TrackerDebugState incumbent_debug=debug?*debug:TrackerDebugState();
+                  TrackerDebugState successor_debug=incumbent_debug;
+                  const auto plans=recoveryCandidates(recovery_plan_.to,&successor_debug);
+                  if(!plans.empty() && std::chrono::duration<double,std::milli>(
+                      std::chrono::steady_clock::now()-recovery_started).count()<12.) {
+                    const auto& plan=plans[recovery_attempt_cursor_++%plans.size()];
+                    auto successor=acceptRecovery(plan,recoverySegment(plan.to),false,&path);
+                    if(!successor.empty()) {
+                      if(debug) {
+                        debug->recovery_replanned=true;
+                        debug->recovery_replan_trigger="confirmed_successor_after_stale_recovery";
+                      }
+                      return successor;
+                    }
+                    if(debug){
+                      *debug=incumbent_debug;
+                      debug->recovery_replan_trigger="successor_execution_rejected";
+                    }
+                  }else if(debug){
+                    debug->recovery_replan_trigger="successor_"+successor_debug.recovery_reason;
+                  }
+                }
+              }
+            }
+            // An accepted but shrinking prefix must still validate new
+            // measured support. Feed the existing prefix into the comparison
+            // so a failed refresh cannot displace it.
+            if(cfg_.recovery_progress_continuity &&
+               (recovery_plan_.joint_support || canReanchorIndependentBend(recovery_plan_)) &&
+               origin_prefix_only_ && polylineLengthLocal(path)<1.30 &&
+               std::chrono::duration<double,std::milli>(
+                   std::chrono::steady_clock::now()-recovery_started).count()<18.0) {
+              auto longer=refreshSupportedRecovery(ego_now,debug,&path);
+              if(!longer.empty())return longer;
+            }
+            return path;
+          }
           if(debug)debug->recovery_reason="recovery_execution_infeasible";
         }
       } else if(debug)debug->recovery_candidate_reject="recovery_segment_unavailable";
@@ -6646,10 +8215,16 @@ class PathGenerator {
       auto plans=geometryRecoveryCandidates(debug);
       if(replanning)plans.erase(std::remove_if(plans.begin(),plans.end(),
           [&](const RecoveryPlan& p){return p.from!=previous_from || p.to!=previous_to;}),plans.end());
-      if(plans.empty() && geometry_fit_cache_.complete && geometry_fit_cache_.plans.empty() &&
+      const bool short_startup=cfg_.recovery_two_point_startup && !replanning &&
+          !origin_approach_world_.empty() && geometry_split_.before.size()==2;
+      // The independent fit returns before initializing its cache if it
+      // only has two upstream points. Such a startup otherwise never gets
+      // to try the supported joint fit.
+      if(plans.empty() && (short_startup ||
+          (geometry_fit_cache_.complete && geometry_fit_cache_.plans.empty())) &&
          (!recovery_active_ || recovery_plan_.joint_support)) {
         RecoveryPlan joint;
-        if(jointGeometrySupport(&joint) && (!replanning ||
+        if(jointGeometrySupport(&joint,short_startup) && (!replanning ||
             (joint.from==previous_from && joint.to==previous_to)) &&
            std::chrono::duration<double,std::milli>(
                std::chrono::steady_clock::now()-recovery_started).count()<12.0) {
@@ -6689,17 +8264,21 @@ class PathGenerator {
     }
     // Do not replace an accepted joint S support with the old truncated
     // section when a transient actuator/stopping-distance check fails.
-    if(recovery_active_ && recovery_plan_.joint_support) {
+    if(recovery_active_ && (recovery_plan_.joint_support || recovery_plan_.observed_gap_fit)) {
+      if(recovery_plan_.joint_support) {
+        auto refreshed=refreshSupportedRecovery(ego_now,debug);
+        if(!refreshed.empty())return refreshed;
+      }
       auto braking=brakingReference(ego_now,debug);
       if(!braking.empty())return braking;
       if(debug) {
         debug->origin_mode="unavailable";
         debug->origin_reject=debug->reference_reason=
-            "joint_"+debug->recovery_candidate_reject;
+            (recovery_plan_.observed_gap_fit?"observed_gap_":"joint_")+debug->recovery_candidate_reject;
         debug->reference_geometry_valid=debug->published_geometry_valid=false;
         debug->published_full_valid=debug->candidate_full_valid=false;
         debug->reference_publish_mode="empty";
-        debug->execution_repair_kind="continuous_joint_support";
+        debug->execution_repair_kind=recovery_plan_.observed_gap_fit?"observed_gap_support":"continuous_joint_support";
       }
       return {};
     }
@@ -6713,6 +8292,12 @@ class PathGenerator {
       debug->joint_support_span=debug->joint_history_error_max=0.;
     }
     auto path=buildOriginCandidate(raw_trail,raw,ego_now,debug);
+    if(cfg_.ordinary_prefix_refit && !recovery_active_ && origin_prefix_only_ &&
+       std::chrono::duration<double,std::milli>(
+           std::chrono::steady_clock::now()-recovery_started).count()<12.0) {
+      auto refined=refineOrdinaryPrefix(raw_trail,path,ego_now,debug);
+      if(!refined.empty())return refined;
+    }
     if(!path.empty() && origin_prefix_only_ &&
        !boundRecoveryPrefix(polylineLengthLocal(path),ego_now.v,debug)) {
       // Ordinary/cached prefixes obey the same stopping rule as recovery
@@ -6735,7 +8320,8 @@ class PathGenerator {
         debug->recovery_from_segment=recovery_plan_.from;debug->recovery_to_segment=recovery_plan_.to;
         debug->recovery_gap=recovery_plan_.gap;debug->recovery_gap_time=recovery_plan_.dt;
         debug->recovery_fit_error=recovery_plan_.error;
-        debug->execution_repair_kind=recovery_plan_.geometry?"continuous_geometry":"reacquisition";
+        debug->execution_repair_kind=recovery_plan_.geometry?"continuous_geometry":
+            (recovery_plan_.chained_reacquisition?"chained_reacquisition":"reacquisition");
       }
     }
     if(debug && recovery_active_) {
@@ -6990,9 +8576,11 @@ class PathGenerator {
     const bool has_path =
         debug->actual_published_points >= 2 && debug->actual_published_span > 0.0;
     const ros::Time now = ros::Time::now();
-    if (has_path && last_published_endpoint_source_stamp_.isValid()) {
+    const ros::Time source_stamp=cfg_.durable_measured_rejoin?
+        published_geometry_source_stamp_:last_published_endpoint_source_stamp_;
+    if (has_path && (cfg_.durable_measured_rejoin ? !source_stamp.isZero() : source_stamp.isValid())) {
       debug->published_endpoint_age =
-          std::max(0.0, (now - last_published_endpoint_source_stamp_).toSec());
+          std::max(0.0, (now - source_stamp).toSec());
       debug->accepted_source_age = debug->published_endpoint_age;
       debug->reference_latency_source = "accepted_source_age";
     }
@@ -7000,7 +8588,7 @@ class PathGenerator {
       debug->geometry_progress_age =
           std::max(0.0, (now - last_published_endpoint_progress_stamp_).toSec());
     }
-    if (current_candidate_source_stamp_.isValid()) {
+    if (!cfg_.durable_measured_rejoin && current_candidate_source_stamp_.isValid()) {
       debug->tail_endpoint_age =
           std::max(0.0, (now - current_candidate_source_stamp_).toSec());
       debug->candidate_source_stamp = current_candidate_source_stamp_.toSec();
@@ -8173,6 +9761,32 @@ class PathGenerator {
            m.heading_jump <= cfg_.reference_output_max_heading_jump;
   }
 
+ public:
+  static bool forwardEndpointProgress(const std::vector<HistoryPoint2D>& world,
+      const std::vector<HistoryPoint2D>& previous,double tolerance) {
+    if(world.size()<2)return false;
+    if(previous.empty())return true;
+    const auto& endpoint=previous.back();
+    const double tx=std::cos(endpoint.heading),ty=std::sin(endpoint.heading);
+    if((world.back().x-endpoint.x)*tx+(world.back().y-endpoint.y)*ty<=0.02)return false;
+    double arc=0.,nearest=std::numeric_limits<double>::infinity(),station=0.;
+    bool forward=false;
+    for(size_t i=1;i<world.size();++i) {
+      const auto& a=world[i-1];const auto& b=world[i];
+      const double dx=b.x-a.x,dy=b.y-a.y,ds=hypot2(dx,dy);
+      if(ds<1e-6)continue;
+      const double u=clampValue(((endpoint.x-a.x)*dx+(endpoint.y-a.y)*dy)/square(ds),0.,1.);
+      const double d=pointDistance(endpoint.x,endpoint.y,a.x+u*dx,a.y+u*dy);
+      if(d<nearest) {
+        nearest=d;station=arc+u*ds;
+        forward=dx*tx+dy*ty>0.5*ds;
+      }
+      arc+=ds;
+    }
+    return nearest<=tolerance && forward && arc-station>0.02;
+  }
+
+ private:
   void acceptPublishedReference(const std::vector<HistoryPoint2D>& world,
                                 const ros::Time& stamp,
                                 const std::string& mode,
@@ -8188,7 +9802,11 @@ class PathGenerator {
     const ros::Time publish_stamp = stamp.isValid() ? stamp : ros::Time::now();
     const HistoryPoint2D& endpoint = world.back();
     const ros::Time endpoint_source_stamp = current_geometry_source_stamp_;
-    const bool endpoint_source_valid = endpoint_source_stamp.isValid();
+    const bool endpoint_source_valid = cfg_.durable_measured_rejoin?
+        !endpoint_source_stamp.isZero() && endpoint_source_stamp<=publish_stamp:
+        endpoint_source_stamp.isValid();
+    if(cfg_.durable_measured_rejoin)
+      published_geometry_source_stamp_=endpoint_source_valid?endpoint_source_stamp:ros::Time();
     const double endpoint_move =
         last_published_endpoint_valid_
             ? pointDistance(last_published_endpoint_x_,
@@ -8206,7 +9824,9 @@ class PathGenerator {
     if (endpoint_source_advanced) {
       last_published_endpoint_source_stamp_ = endpoint_source_stamp;
     }
-    const bool endpoint_progressed =
+    const bool endpoint_progressed = cfg_.durable_measured_rejoin ?
+        endpoint_source_advanced && forwardEndpointProgress(world,last_published_reference_world_,
+                                                           cfg_.reference_measurement_sigma) :
         !last_published_endpoint_valid_ ||
         (endpoint_move > 0.02 && endpoint_source_advanced) ||
         (endpoint_move > 0.02 && !endpoint_source_valid);
@@ -8249,10 +9869,12 @@ class PathGenerator {
       if (debug->published_span_target <= 1e-6) {
         debug->published_span_target = span;
       }
-      if (last_published_endpoint_source_stamp_.isValid()) {
+      const auto freshness_stamp=cfg_.durable_measured_rejoin?
+          published_geometry_source_stamp_:last_published_endpoint_source_stamp_;
+      if (cfg_.durable_measured_rejoin?!freshness_stamp.isZero():freshness_stamp.isValid()) {
         debug->published_endpoint_age =
             std::max(0.0,
-                     (publish_stamp - last_published_endpoint_source_stamp_).toSec());
+                     (publish_stamp - freshness_stamp).toSec());
         debug->tail_endpoint_age =
             endpoint_source_valid
                 ? std::max(0.0, (publish_stamp - endpoint_source_stamp).toSec())
@@ -8332,12 +9954,23 @@ class PathGenerator {
   mutable double last_published_endpoint_x_ = 0.0;
   mutable double last_published_endpoint_y_ = 0.0;
   mutable ros::Time last_published_endpoint_source_stamp_;
+  mutable ros::Time published_geometry_source_stamp_;
   mutable ros::Time last_published_endpoint_progress_stamp_;
   mutable ros::Time current_candidate_source_stamp_;
   mutable ros::Time current_geometry_source_stamp_;
   mutable std::vector<HistoryPoint2D> origin_history_cache_;
   mutable std::vector<HistoryPoint2D> recovery_observed_world_,recovery_support_world_;
   mutable GeometrySplit geometry_split_;
+  mutable ros::Time last_prefix_refresh_source_;
+  mutable ros::Time last_successor_attempt_;
+  mutable unsigned successor_attempt_count_=0;
+  mutable ros::Time ordinary_refit_attempt_,ordinary_refit_source_;
+  mutable bool ordinary_refit_splice_=false;
+  mutable std::vector<HistoryPoint2D> joint_prefix_world_;
+  mutable ros::Time joint_prefix_plan_join_;
+  mutable bool joint_prefix_spliced_=false;
+  mutable bool joint_prefix_reanchored_=false;
+  mutable double ordinary_refit_offset_=std::numeric_limits<double>::quiet_NaN();
   mutable RecoveryPlan recovery_plan_;
   mutable RecoveryFitCache recovery_fit_cache_,geometry_fit_cache_;
   mutable size_t recovery_attempt_cursor_=0;
@@ -8353,6 +9986,7 @@ class PathGenerator {
   mutable bool origin_prefix_only_ = false;
   mutable double origin_fit_length_ = 0.10,origin_fit_limit_ = 0.015;
   mutable bool origin_constrained_fit_ = false;
+  mutable double origin_terminal_offset_=std::numeric_limits<double>::quiet_NaN();
   mutable double origin_rate_cap_ = 0.;
   mutable double origin_return_length_ = 0.;
   mutable std::vector<HistoryPoint2D> origin_approach_world_;
@@ -8381,6 +10015,15 @@ class FixedFrameTrajectoryReconstructor {
         projector_(loadProjectorConfig()),
         tracker_(loadTrackerConfig()),
         path_generator_(loadPathConfig()) {
+    research_enabled_=pnh_.param("enable_research_telemetry",false);
+    nh_.param<std::string>("/control_research/run_id",research_run_id_,"");
+    pnh_.getParam("research_run_id",research_run_id_);
+    if(research_run_id_.size()>80 || research_run_id_.find_first_not_of(
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-")!=std::string::npos) {
+      ROS_WARN("Ignoring invalid control research run id");research_run_id_.clear();
+    }
+    if(research_enabled_)
+      research_reference_pub_=nh_.advertise<move_car::ReferenceInfo>("/control_research/reference",2);
     base_frame_ = pnh_.param<std::string>("base_frame", "base_link");
     odom_frame_ = pnh_.param<std::string>("odom_frame", "reconstruction_odom");
     tracked_topic_ = pnh_.param<std::string>("tracked_topic", "/pointpillars/tracked_objects");
@@ -8415,6 +10058,7 @@ class FixedFrameTrajectoryReconstructor {
     steer_angle_bias_ = pnh_.param("steer_angle_bias", 0.0);
     steer_sign_ = pnh_.param("steer_sign", 1.0);
     steer_deadband_rad_ = pnh_.param("steer_deadband_rad", 0.002);
+    qualify_chassis_motion_ = pnh_.param("qualify_chassis_motion", false);
     lost_timeout_ = pnh_.param("lost_timeout", 0.60);
     min_motion_speed_for_yaw_ = pnh_.param("min_motion_speed_for_yaw", 0.15);
     allow_unstamped_tracked_fallback_ = pnh_.param("allow_unstamped_tracked_fallback", true);
@@ -8481,7 +10125,7 @@ class FixedFrameTrajectoryReconstructor {
   void initializeOriginLogs() {
     if(!enable_debug_csv_logs_)return;
     mkdir(debug_log_dir_.c_str(),0775);
-    origin_run_id_=std::to_string(ros::WallTime::now().toNSec());
+    origin_run_id_=research_run_id_.empty() ? std::to_string(ros::WallTime::now().toNSec()) : research_run_id_;
     origin_summary_log_.open(debugFilePath("origin_reference_"+origin_run_id_+".csv").c_str());
     origin_points_log_.open(debugFilePath("origin_points_"+origin_run_id_+".csv").c_str());
     origin_input_log_.open(debugFilePath("origin_observations_"+origin_run_id_+".csv").c_str());
@@ -8508,7 +10152,8 @@ class FixedFrameTrajectoryReconstructor {
         "confirmation_observed_progress,recovery_braking_only,follower_history_s,"
         "steering_input_raw,steering_input_used,steering_input_deferred,steering_input_defer_count,steering_input_valid_age\n";
     origin_points_log_<<"run_id,stamp,kind,index,source_stamp,source_id,source_end_id,source_fraction,"
-        "segment_id,history_s,world_x,world_y,center_x,center_y,yaw,kappa,predicted,observation_support_start\n";
+        "segment_id,history_s,world_x,world_y,center_x,center_y,yaw,kappa,predicted,observation_support_start,"
+        "observation_start_supports_position,preceding_observation_start,preceding_observation_end\n";
     origin_input_log_<<"run_id,receipt_stamp,observation_stamp,index,raw_x,raw_y,raw_z,qx,qy,qz,qw,"
         "pose_valid,pose_stamp,query_dt,rear_x,rear_y,body_yaw,projected,selected_world_x,selected_world_y,reason\n";
   }
@@ -8587,20 +10232,22 @@ class FixedFrameTrajectoryReconstructor {
             <<",history,"<<i<<","<<h.stamp.toSec()<<","<<h.source_id<<","<<h.source_end_id<<","
             <<h.source_fraction<<","<<h.segment_id<<","<<h.history_s<<","
             <<h.x<<","<<h.y<<","<<x<<","<<y<<","<<h.heading<<","<<h.curvature<<","
-            <<(h.predicted?1:0)<<","<<h.observation_support_start.toSec()<<"\n";
+            <<(h.predicted?1:0)<<","<<h.observation_support_start.toSec()<<","
+            <<(h.observation_start_supports_position?1:0)<<","<<h.preceding_observation_start.toSec()
+            <<","<<h.preceding_observation_end.toSec()<<"\n";
       }
       for(size_t i=0;i<reference.size();++i) {
         const auto& p=reference[i];double x,y;bodyCenterToWorld(pose,p.x,p.y,&x,&y);
         origin_points_log_<<std::fixed<<std::setprecision(9)<<origin_run_id_<<","<<now.toSec()
             <<",execution,"<<i<<","<<source<<",0,0,0,0,0,"<<x<<","<<y<<","
-            <<p.x<<","<<p.y<<","<<p.yaw<<","<<p.curvature<<",0,0\n";
+            <<p.x<<","<<p.y<<","<<p.yaw<<","<<p.curvature<<",0,0,0,0,0\n";
       }
       const auto& recovery=path_generator_.recoverySupportForDebug();
       for(size_t i=0;i<recovery.size();++i)if(d.recovery_active && recovery[i].execution_only) {
         const auto& h=recovery[i];double x,y;worldToBodyCenter(pose,h.x,h.y,&x,&y);
         origin_points_log_<<std::fixed<<std::setprecision(9)<<origin_run_id_<<","<<now.toSec()
             <<",recovery_support,"<<i<<",0,0,0,0,0,0,"<<h.x<<","<<h.y<<","
-            <<x<<","<<y<<","<<h.heading<<","<<h.curvature<<",1,0\n";
+            <<x<<","<<y<<","<<h.heading<<","<<h.curvature<<",1,0,0,0,0\n";
       }
     }
     if(origin_log_cycle_%30==0){origin_summary_log_.flush();origin_points_log_.flush();origin_input_log_.flush();}
@@ -9719,6 +11366,7 @@ class FixedFrameTrajectoryReconstructor {
   LeadTrailTracker::Config loadTrackerConfig() const {
     LeadTrailTracker::Config cfg;
     cfg.lost_timeout = pnh_.param("lost_timeout", 0.60);
+    cfg.reacquisition_segment_recovery = pnh_.param("enable_reacquisition_segment_recovery", false);
     cfg.heading_blend_alpha = clampValue(pnh_.param("heading_blend_alpha", 0.20), 0.0, 1.0);
     cfg.heading_from_velocity_speed_gate = pnh_.param("heading_from_velocity_speed_gate", 0.25);
     cfg.innovation_base_gate = pnh_.param("innovation_base_gate", 0.10);
@@ -9936,8 +11584,28 @@ class FixedFrameTrajectoryReconstructor {
 
   PathGenerator::Config loadPathConfig() const {
     PathGenerator::Config cfg;
+    cfg.supported_recovery_refresh=pnh_.param("enable_supported_recovery_refresh",false);
     cfg.reference_measurement_sigma=pnh_.param("measurement_cross_sigma",0.12);
     cfg.recovery_lost_timeout=pnh_.param("lost_timeout",0.60);
+    cfg.recovery_bend_tangent_search=pnh_.param("enable_recovery_bend_tangent_search",false);
+    cfg.reacquisition_use_observed_start=pnh_.param("enable_reacquisition_segment_recovery",false);
+    cfg.recovery_chain_enabled=pnh_.param("enable_recovery_chain",false);
+    cfg.recovery_two_point_startup=pnh_.param("enable_recovery_two_point_startup",false);
+    cfg.startup_confirmed_tangent=pnh_.param("enable_startup_confirmed_tangent",false);
+    cfg.recovery_progress_continuity=pnh_.param("enable_recovery_progress_continuity",false);
+    cfg.ordinary_prefix_refit=pnh_.param("enable_ordinary_prefix_refit",false);
+    cfg.joint_prefix_corridor_search=pnh_.param("enable_joint_prefix_corridor_search",false);
+    cfg.recovery_observed_gap_fit=pnh_.param("enable_recovery_observed_gap_fit",false);
+    cfg.recovery_interpolate_gap_goal=pnh_.param("enable_recovery_interpolate_gap_goal",false);
+    cfg.ordinary_prefix_continuation=pnh_.param("enable_ordinary_prefix_continuation",false);
+    cfg.retain_joint_prefix=pnh_.param("enable_retain_joint_prefix",false);
+    cfg.retain_rolling_joint_curve=pnh_.param("enable_retain_rolling_joint_curve",false);
+    cfg.joint_supported_continuation=pnh_.param("enable_joint_supported_continuation",false);
+    cfg.durable_measured_rejoin=pnh_.param("enable_durable_measured_rejoin",false);
+    cfg.independent_bend_rejoin=pnh_.param("enable_independent_bend_rejoin",false);
+    cfg.recovery_rolling_steer_continuity=pnh_.param("enable_recovery_rolling_steer_continuity",false);
+    cfg.successor_after_stale_recovery=pnh_.param("enable_successor_after_stale_recovery",false);
+    cfg.recovery_confirmation_window=std::max(0.0,pnh_.param("fixed_lag_window",3.0));
     cfg.recovery_max_distance=pnh_.param("target_lock_dist_gate",1.20);
     cfg.recovery_max_speed=pnh_.param("lead_tail_max_speed",0.60);
     cfg.raw_resample_ds = pnh_.param("raw_resample_ds", 0.08);
@@ -10122,10 +11790,18 @@ class FixedFrameTrajectoryReconstructor {
         std::fabs(steer_raw) < 1.2 &&
         std::fabs(steer_angle_scale_) < 0.10 &&
         std::fabs(steer_angle_rad) < 0.03;
+    const auto& qualified=ego_motion_.steeringSampleGuard();
+    if(qualify_chassis_motion_&&research_control::discontinuousZeroBatteryMotion(
+        msg->battery_level,steer_angle_rad,stamp.toSec(),qualified.accepted,
+        qualified.accepted_stamp.toSec(),1.0)) {
+      ROS_WARN_THROTTLE(2.,"P7 reference pose rejected inconsistent chassis motion report");
+      return;
+    }
     ego_motion_.updateWheelState(stamp, wheel_speed_mps, steer_angle_rad);
   }
 
   void carvelCallback(const geometry_msgs::Twist::ConstPtr& msg) {
+    if(qualify_chassis_motion_)return; // The opted-in carTop publishes a duplicate motion report.
     std::lock_guard<std::mutex> lock(mutex_);
     // geometry_msgs/Twist has no header, so arrival time is the only available fallback.
     const ros::Time stamp = ros::Time::now();
@@ -10213,6 +11889,7 @@ class FixedFrameTrajectoryReconstructor {
     double metric = 0.0;
     uint64_t obs_ver = 0;
     TrackerDebugState debug_snapshot;
+    EgoPose2D ego_now;
 
     {
       std::lock_guard<std::mutex> lock(mutex_);
@@ -10221,7 +11898,6 @@ class FixedFrameTrajectoryReconstructor {
       tracker_.markLostIfExpired(now);
       tracker_.pruneHistory(now);
 
-      EgoPose2D ego_now;
       debug_state_.origin_mode="unavailable";debug_state_.origin_reject="ego_pose_unavailable";
       debug_state_.recovery_braking_only=false;
       debug_state_.follower_history_s=std::numeric_limits<double>::quiet_NaN();
@@ -10327,7 +12003,6 @@ class FixedFrameTrajectoryReconstructor {
       ego_standstill = std::fabs(speed) < min_motion_speed_for_yaw_ * 0.9;
       debug_state_.reconstruction_compute_ms =
           (ros::WallTime::now() - compute_start).toSec() * 1000.0;
-      logOriginPath(now,ego_now,reference_history,ref_pts);
       debug_snapshot = debug_state_;
     }
 
@@ -10339,7 +12014,37 @@ class FixedFrameTrajectoryReconstructor {
       reference_msg.poses.front().header.seq=0x42524b31u;
     reference_pub_.publish(reference_msg);
     publishReferenceStatus(now, debug_snapshot, ref_pts.size());
+    if(research_enabled_) {
+      move_car::ReferenceInfo info;
+      info.header=reference_msg.header;info.schema_version=1;info.run_id=research_run_id_;
+      info.geometry_stamp_ns=now.toNSec();info.tracking_point="body_center";
+      info.geometry_valid=debug_snapshot.reference_geometry_valid && ref_pts.size()>=2;
+      info.time_parameterized=false;info.braking_only=debug_snapshot.recovery_braking_only;
+      info.confidence=debug_snapshot.reference_tracking_confidence;
+      info.source_age=debug_snapshot.accepted_source_age;
+      info.speed_cap=debug_snapshot.origin_rate_cap;
+      info.speed_cap_valid=info.geometry_valid && std::isfinite(info.speed_cap) && info.speed_cap>=0.;
+      info.reason="geometry_only_no_time_law:"+debug_snapshot.reference_reason;
+      info.samples.reserve(ref_pts.size());double arc=0.;
+      for(size_t i=0;i<ref_pts.size();++i) {
+        const auto& p=ref_pts[i];
+        if(i)arc+=std::hypot(p.x-ref_pts[i-1].x,p.y-ref_pts[i-1].y);
+        move_car::ReferenceSample sample;
+        sample.s=arc;sample.x=p.x;sample.y=p.y;sample.tangent_yaw=p.yaw;
+        sample.curvature=p.curvature;
+        sample.geometry_valid=info.geometry_valid && std::isfinite(arc) && std::isfinite(p.x) && std::isfinite(p.y) &&
+            std::isfinite(p.yaw) && std::isfinite(p.curvature);
+        sample.time_from_start=sample.speed=sample.acceleration=std::numeric_limits<double>::quiet_NaN();
+        sample.time_state_valid=false;info.samples.push_back(sample);
+        info.geometry_valid=info.geometry_valid && sample.geometry_valid;
+      }
+      info.speed_cap_valid=info.speed_cap_valid && info.geometry_valid;
+      research_reference_pub_.publish(info);
+    }
 
+    // This node uses ros::spin(), so this callback owns the logged snapshot
+    // until it returns. Publish the path and matched status before CSV I/O.
+    logOriginPath(now,ego_now,reference_history,ref_pts);
     appendFixedFrameTrajectoryToFile(world_history);
     writeRuntimeDebug(now,
                       debug_snapshot,
@@ -10439,6 +12144,9 @@ class FixedFrameTrajectoryReconstructor {
   ros::Publisher raw_pub_;
   ros::Publisher reference_pub_;
   ros::Publisher reference_status_pub_;
+  bool research_enabled_=false;
+  std::string research_run_id_;
+  ros::Publisher research_reference_pub_;
   ros::Timer timer_;
   std::mutex mutex_;
   tf2_ros::Buffer tf_buffer_;
@@ -10467,6 +12175,7 @@ class FixedFrameTrajectoryReconstructor {
   double wheel_speed_scale_ = 0.001;
   double speed_hint_scale_ = 1.0;
   double steer_angle_scale_ = 1.0;
+  bool qualify_chassis_motion_ = false;
   double steer_angle_bias_ = 0.0;
   double steer_sign_ = 1.0;
   double steer_deadband_rad_ = 0.002;
